@@ -1,0 +1,839 @@
+#!/usr/bin/env bash
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Copyright 2012 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+# Description:
+#
+# BIRCBOT is an IRC bot written for Bash 3 / Bash 4
+# It creates the network connection using NetCat (nc)
+# Tested on Linux (Debian, RedHat and CentOS)
+#
+# Please note: An IRC bot in Bash is a bad idea. This was written solely for
+#              experimental and educational purposes. Do not attempt to run
+#              this script as a privileged user.
+#
+#              Currently, this bot needs to recide in:
+#                /cathedral/userbin/bircbot
+#              The additional module files and includes need to recide in:
+#                /cathedral/userbin/.bircbot
+#              User config belongs in:
+#                $HOME/.bircbot
+#
+# For updates, please see <http://www.dhampir.no/stuff/bash/bircbot>.
+#
+# Comments welcome, improvements/patches twice as welcome.
+#
+
+# Releases / Changelog:
+#
+# v0.10, 2012.06.11 - Initial v0.1 release
+#                   * All intended functionality implemented
+#
+# v0.11, 2012.07.31 - First update after extended field test
+#                   * Fixed a bug where addressing the bot privately wouldn't
+#                     remove the address character or nickname from the data
+#                   * Added lots of comments
+#                   * Some general cleanup
+#
+# v0.20, 2013.04.24 - Admin re-write
+#                   * Admins are now authenticated by host instead of passwords
+#                   * All relevant modules updated for above change
+#                   * Default help factoid can now be set using the magic factoids_help fact
+#
+# v0.60, 2013.09.15 - Feature creep
+#                   * New release with lots more functionality added and various fixes
+#                   * Core: Reply nicks can be overridden
+#
+# v1.00, 2013.09.18 - Release
+#                   * Ability to disable mods
+#                   * Stress tests and unstable network tests passed
+#                   * All planned features implemented
+#
+# v1.01, 2014.01.21 - Bugfix
+#                   * Bot now handles servers with no configured MOTD
+#
+# v1.02, 2014.08.23 - Better addressing
+#                   * Case insensitive nick check when addressing the bot
+#
+
+_scriptname="bircbot"
+set -u
+
+# statics
+declare -ri STATE_INIT=0
+declare -ri STATE_CONNECTED=1
+declare -ri STATE_RUNNING=2
+declare -ri STATE_SHUTDOWN=3
+
+# source
+source /cathedral/userbin/.bircbot/shellfunc.src
+source /cathedral/userbin/.bircbot/irccodes.src
+
+# require bash 4
+if ((BASH_VERSINFO[0] < 4)); then
+	sf_error "bircbot requires BASH 4 to run"
+	exit 1
+fi
+
+# check for netcat
+if ! type "nc" &>/dev/null; then
+	sf_error 'Unable to find the "nc" command. Install NetCat, or modify your $PATH'
+	exit 1
+fi
+
+# print basic usage instructions
+function printusage
+{
+cat - >&2 <<EOF
+
+Description:
+  Bash IRC Bot - configuration should reside in \$HOME/.bircbot/
+    - Requires Bash 4.0 or above -
+
+Usage: ${_scriptname}
+Options:
+  -v
+    Verbose. Will output extra information about what's going on.
+
+EOF
+}
+
+# check if a variable is declared
+function isset
+{
+	declare -p "$@" >/dev/null 2>&1
+}
+
+# read options
+_sf_verbose=false
+moddebug=false
+ipv4=false
+OPTIND=1
+while getopts ":vV4" opt; do
+	case "$opt" in
+		4) ipv4=true ;;
+		v) _sf_verbose=true ;;
+		V) moddebug=true ;;
+		[?])
+			sf_error_unknown_option
+			printusage
+			exit 1
+		;;
+		:)
+			sf_error_missing_argument
+			printusage
+			exit 1
+		;;
+	esac
+done
+shift $((OPTIND-1))
+if [[ "${1:-}" = "--" ]]; then shift; fi
+
+# config
+CONFIG="${1:-"${CONFIG:-"${HOME}/.bircbot"}"}"
+if ! source "$CONFIG/bircbot.conf" 2>/dev/null; then
+	sf_error "Unable to read $CONFIG/bircbot.conf"
+	sf_stderr
+	sf_stderr "To configure, try this:"
+	sf_stderr "  mkdir ${HOME}/.bircbot"
+	sf_stderr "  cp /cathedral/userbin/.bircbot/bircbot.conf.example ${HOME}/.bircbot/bircbot.conf"
+	sf_stderr "    * edit ${HOME}/.bircbot/bircbot.conf using your favorite editor *"
+	sf_stderr "  run the bot :)"
+	exit 1
+fi
+
+# exit on errors below this point
+set -e
+
+# variables
+SERVER=${SERVER:-"irc.freenode.net"}
+PORT=${PORT:-"6667"}
+NICK=${NICK:-"bircbot"}
+NICK=${NICK:0:16}
+USER=${USER:-"bot"}
+NAME=${NAME:-"BIRCBOT"}
+PASS=${PASS:-""}
+MODE=${MODE:-"8"}
+RELAX=${RELAX:-"0.1"}
+ADDRESS=${ADDRESS:-"!"}
+PRIVADDRESS=${PRIVADDRESS-"There is no need to address me in a private message. I already know you're talking to me :)"}
+isset CHANNELS || declare -a CHANNELS=()
+MAXLENGTH=${MAXLENGTH:-400}
+VERSION=("BIRCBOT" "v1.02")
+QUITMSG=${QUITMSG:-"${VERSION[@]}"}
+FLOOD_COUNT=${FLOOD_COUNT:-4}
+FLOOD_TIME=${FLOOD_TIME:-10}
+PING_TIME=${PING_TIME:-300}
+TIMEOUT=${TIMEOUT:-600}
+TICKMOD=${TICKMOD:-true}
+
+# misc
+isset floodcheck || declare -A floodcheck=()
+shopt -s nullglob
+nick=$NICK
+ncpid=""
+
+# clean up temporary files
+function cleanup
+{
+	code=$?
+	set +e
+	if [[ -n "$ncpid" ]]; then
+		if kill -0 $ncpid 2>/dev/null; then
+			sf_stdoutv "Killing NetCat ($ncpid)"
+			kill -TERM $ncpid
+		else
+			sf_stdoutv "NetCat isn't running"
+		fi
+	fi
+	sf_stdoutv "Waiting for all children to die"
+	wait
+	sf_rm_process
+	sf_stdoutv "Cleanup complete"
+}
+trap cleanup EXIT
+
+# array of variables to be unset when the connection to the server is restarted
+# can be used by mods that store the current state of channels and conversations
+isset unset_on_reset || declare -a unset_on_reset=()
+function unset_on_reset
+{
+	local i
+	if (( $# == 0 )); then
+		if [[ -n "${unset_on_reset[*]:-}" ]]; then
+			for i in "${unset_on_reset[@]}"; do
+				unset "$i"
+			done
+		fi
+	else
+		if [[ -n "${unset_on_reset[*]:-}" ]]; then
+			for i in "${unset_on_reset[@]}"; do
+				[[ "$i" != "$1" ]] || return 0
+			done
+		fi
+		unset_on_reset+=( "$1" )
+		sf_stdoutv "Unset on reset: $1"
+	fi
+	return 0
+}
+
+# print bircbot version
+sf_stdout "${VERSION[@]}"
+
+# print bash version, and quit if version is too low
+sf_stdout "Running on Bash version: $BASH_VERSION"
+if (( BASH_VERSINFO[0] < 4 )); then
+	sf_error "$_scriptname is incompatible with this version!"
+	exit 1
+fi
+
+# generate fifo's for communication between subshells
+sf_stdoutv "Generating FIFO's"
+sf_mkfifo -qo tx
+sf_stdoutv "TX: $tx"
+sf_mkfifo -qo rx
+sf_stdoutv "RX: $rx"
+
+# How to curl
+function curl
+{
+	command curl \
+	--silent \
+	--insecure \
+	--user-agent "Mozilla/5.0 (X11; Linux i686; rv:31.0) Gecko/20100101 Firefox/31.0 Iceweasel/31.2.0" \
+	${CURL_PROXY:+--socks4 "$CURL_PROXY"} \
+	"$@"
+}
+
+# Simple URL encoding - just encode everything
+function encode
+{
+	local encoded=$(xxd -plain <<<"${@:-$(cat)}" | tr -d '\n' | sed 's/\(..\)/%\1/g')
+	echo "${encoded%\%0a}"
+}
+
+# start netcat
+function startnetcat
+{
+	local opt=""
+	if $ipv4; then
+		opt+=" -4"
+	fi
+	state=$STATE_INIT
+	sf_stdout "State: init"
+	unset_on_reset
+	nc${opt} "$SERVER" "$PORT" >"$rx" <"$tx" &
+	exec 3<"$rx" 4>"$tx"
+	ncpid=$!
+	sf_stdout "Connecting..."
+	sf_stdoutv "NetCat pid: $ncpid"
+}
+startnetcat
+
+# submit a raw message to the server - only length is limited, no other processing is done
+function tx
+{
+	((++TXCOUNT))
+	local text=$@
+	if (( ${#text} > MAXLENGTH )); then
+		sf_warning "Output text limited to $MAXLENGTH characters!"
+		text=${text:0:$MAXLENGTH}
+	fi
+	sf_stdout "TX: $@"
+	echo "$@" >&4
+}
+
+# perform an action (like /me in mIRC)
+function action
+{
+	local reply=$1
+	shift
+	if [[ -z "${reply:-}" ]]; then
+		sf_error "$FUNCNAME was called without a valid reply target!"
+		exit 1
+	fi
+	tx "PRIVMSG $reply :"$'\x01'"ACTION $@"$'\x01'
+}
+
+# perform an action in all channels
+function action_all
+{
+	local channel
+	for channel in "${current_channels[@]}"; do
+		action "$channel" "$@"
+	done
+}
+
+# fallback action - performs an action as a fallback if no other reply was given
+function faction
+{
+	if [[ -z "${reply:-}" ]]; then
+		sf_error "$FUNCNAME was called without a valid reply target!"
+		exit 1
+	fi
+	if (( $# != 0 )); then
+		local priority=$1
+		if ! sf_integer -vq "$priority"; then
+			sf_error "Invalid priority in call to $FUNCNAME"
+			exit 1
+		fi
+		shift
+		local message="$@"
+		if [[ -z "$message" ]]; then
+			sf_error "No message in call to $FUNCNAME"
+			exit 1
+		fi
+		sf_stdoutv "$FUNCNAME: Adding fallback action \"$message\" with priority $priority"
+		bircbot_factions[$priority]=$message
+	else
+		local priority=-1 p
+		for p in "${!bircbot_factions[@]}"; do
+			if (( p > priority )); then
+				priority=$p
+			fi
+		done
+		if (( priority != -1 )); then
+			action "$reply" "${bircbot_factions[$priority]}"
+		else
+			return 1
+		fi
+	fi
+	return 0
+}
+
+# say something in a channel
+function say
+{
+	local reply=$1
+	shift
+	if
+		[[ -z "${reply:-}" ]] ||
+		[[ -z "$@" ]]
+	then
+		sf_error "$FUNCNAME was called with invalid parameters!"
+		exit 1
+	fi
+	tx "PRIVMSG $reply :$@"
+}
+
+# say something in all channels
+function say_all
+{
+	local channel
+	for channel in "${current_channels[@]}"; do
+		say "$channel" "$@"
+	done
+}
+
+# reply to whoever sent us the message
+function reply
+{
+	if [[ -z "${reply:-}" ]]; then
+		sf_error "$FUNCNAME was called without a valid reply target!"
+		exit 1
+	fi
+	if [[ -z "$@" ]]; then
+		sf_warning "$FUNCNAME was called with no text"
+		return
+	fi
+	if [[ "$reply" = "#"* ]]; then
+		tx "PRIVMSG $reply :${reply_nick:-"$(src_nick)"}: $@"
+	else
+		tx "PRIVMSG $reply :$@"
+	fi
+}
+
+# fallback reply - replies if no other reply was given
+function freply
+{
+	if [[ -z "${reply:-}" ]]; then
+		sf_error "$FUNCNAME was called without a valid reply target!"
+		exit 1
+	fi
+	if (( $# != 0 )); then
+		local priority=$1
+		if ! sf_integer -vq "$priority"; then
+			sf_error "Invalid priority in call to $FUNCNAME"
+			exit 1
+		fi
+		shift
+		local message="$@"
+		if [[ -z "$message" ]]; then
+			sf_error "No message in call to $FUNCNAME"
+			exit 1
+		fi
+		sf_stdoutv "$FUNCNAME: Adding fallback reply \"$message\" with priority $priority"
+		bircbot_freplies[$priority]=$message
+		bircbot_freplynicks[$priority]=${reply_nick:-"$(src_nick)"}
+	else
+		local priority=-1 p
+		for p in "${!bircbot_freplies[@]}"; do
+			if (( p > priority )); then
+				priority=$p
+			fi
+		done
+		if (( priority != -1 )); then
+			reply_nick="${bircbot_freplynicks[$priority]}" \
+			reply "${bircbot_freplies[$priority]}"
+		else
+			return 1
+		fi
+	fi
+	return 0
+}
+
+# check if an admin is speaking - should be overridden by admin.bmod or another mod
+function admin_has
+{
+	sf_warning "Default implementation of $FUNCNAME was called. This should never happen!"
+	exit 1
+}
+# same as admin_has, but reply if admin access is not granted - should be overridden by admin.bmod or another mod
+function admin_verbosehas
+{
+	admin_has "$@"
+}
+
+# verify that a user is not flooding the bot
+function floodcheck
+{
+	if ! ${FLOOD_CHECK:-true}; then
+		sf_stdoutv "$FUNCNAME: Flood checking disabled"
+		return 0
+	fi
+	local nick=$1 warn=true now=$(sf_unixtime) i count=0 silent=${2:-false}
+	if ! $silent && [[ -z "${reply:-}" ]]; then
+		sf_error "$FUNCNAME was called non-silently without a valid reply target!"
+		exit 1
+	fi
+	isset times || declare -a times=()
+	if [[ -n  "${floodcheck[$nick]:-}" ]]; then
+		read -r warn <<<"${floodcheck[$nick]%% *}"
+		read -ra times <<<"${floodcheck[$nick]#* }"
+		for i in "${times[@]}"; do
+			((i + FLOOD_TIME < now)) || ((++count))
+		done
+	fi
+	if ((${#times[@]:-0} >= FLOOD_COUNT)); then
+		unset "times[0]"
+	fi
+	times[FLOOD_COUNT]=$now
+	if ((count >= FLOOD_COUNT)); then
+		sf_stdoutv "$FUNCNAME: DENY message"
+		if ! $silent && $warn; then
+			reply "Whoa! Relax! You are flooding the bot! Please wait 10 seconds and try again."
+			warn=false
+		fi
+		floodcheck["$nick"]="$warn ${times[@]}"
+		return 1
+	else
+		sf_stdoutv "$FUNCNAME: ALLOW message"
+		warn=true
+		floodcheck["$nick"]="$warn ${times[@]}"
+		return 0
+	fi
+}
+
+# perform a clean exit on SIGINT (ctrl+c)
+function clean_exit
+{
+	trap - INT
+	sf_stdoutv
+	if ((state == STATE_CONNECTED)) || ((state == STATE_RUNNING)); then
+		tx "QUIT :$QUITMSG"
+	fi
+	state=$STATE_SHUTDOWN
+	sf_stdout "State: shutdown"
+}
+trap clean_exit INT
+
+# function to cut our address character or nick off of the data
+function data_address_size
+{
+	local lowdata=${data,,}
+	local lowadd=${ADDRESS,,}
+	local lownick=${nick,,}
+
+	# addressing by the address character(s)
+	if [[ "$lowdata" = "$lowadd"* ]]; then
+		echo "${#ADDRESS}"
+		return 0
+	fi
+
+	# addressing by nick
+	if
+		[[ "$lowdata" = "${lownick}, "* ]] ||
+		[[ "$lowdata" = "${lownick}: "* ]] ||
+		[[ "$lowdata" = "${lownick} "* ]]
+	then
+		echo "$((${#nick}+1))"
+		return 0
+	fi
+
+	# addressing with an at
+	if
+		[[ "$lowdata" = "@${lownick}, "* ]] ||
+		[[ "$lowdata" = "@${lownick}: "* ]] ||
+		[[ "$lowdata" = "@${lownick} "* ]]
+	then
+		echo "$((${#nick}+2))"
+		return 0
+	fi
+
+	# not addressing the bot
+	echo "0"
+	return 1
+}
+function cutdata
+{
+	local size=$(data_address_size)
+	if (( size == 0 )); then
+		return 1
+	fi
+
+	data=${data:$size}
+	read -r data <<<"$data"
+
+	if [[ -n "$data" ]]; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+# get info from $src
+function src_nick
+{
+	echo -n "${src%%\!*}"
+}
+function src_host
+{
+	echo -n "${src#*\!}"
+}
+
+# utility function to cut one character off of the right
+# bash 4.2.37 (debian wheezy) has a bug with %?
+# $ a='foo\'; echo ${a%?}
+# foo\
+function cutright
+{
+	local line="$@"
+	if [[ -n "$line" ]]; then
+		echo -n "${line:0:$((${#line}-1))}"
+	fi
+}
+
+# tick tock - runs every second
+tick=$SECONDS
+last_rx=$SECONDS
+function tick
+{
+	(( ++tick ))
+	if (( state != STATE_SHUTDOWN )) && [[ -n "$ncpid" ]] && ! kill -0 $ncpid 2>/dev/null; then
+		ncpid=""
+		sf_error "NetCat died!"
+		startnetcat
+	fi
+	if (( last_rx + TIMEOUT < SECONDS )); then
+		sf_warning "No messages from server in $((SECONDS-last_rx)) seconds - timeout!"
+		kill -TERM $ncpid
+	elif (( last_rx + PING_TIME < SECONDS )) && ! (( tick % 10 )); then
+		sf_warning "No messages from server in $((SECONDS-last_rx)) seconds - ping attempt"
+		tx "PING :$nick"
+	fi
+}
+
+# main loop
+while true; do
+	# attempt to read input
+	if read -t 0 <&3; then
+		# got input - reset timeout
+		last_rx=$SECONDS
+
+		# reset the reply counter
+		TXCOUNT=0
+
+		# read the line and print it
+		read -r line <&3
+		line=${line%$'\r'}
+		sf_stdout "RX: $line"
+
+		# reset variables
+		src=""		# source of message (nick@host)
+		cmd=""		# message type
+		target=""	# target of message (channel, bot...)
+		data=""		# message content
+		reply=""	# where to reply to
+		srv=false	# message is from the server
+
+		# if the message starts with a colon, read src
+		[[ "$line" != :* ]] || read -r src line <<<"$line"
+
+		# read cmd
+		read -r cmd line <<<"$line"
+
+		# read target and data (quit messages have no target)
+		case "$cmd" in
+			QUIT)
+				read -r data <<<"$line"
+			;;
+			*)
+				read -r target data <<<"$line"
+			;;
+		esac
+
+		# remove colons
+		src=${src#:}
+		data=${data#:}
+		target=${target#:}
+
+		# if the source doesn't contain something that resembles "nick@host", this is most likely a server message
+		[[ "$src" = *"!"* ]] || [[ "$src" = *"@"* ]] || srv=true
+
+		# respond to people saying things
+		if [[ "$cmd" = "PRIVMSG" ]]; then
+
+			# CTCP support (rudimentary)
+			if [[ "$data" = $'\x01'*$'\x01' ]]; then
+				cmd="CTCP"
+				data=${data#$'\x01'}
+				data=${data%$'\x01'}
+
+			# someone is messaging us privately
+			elif [[ "$target" = "$nick" ]]; then
+				reply=$(src_nick)
+				if ! admin_has "$(src_host)" && ! floodcheck "$(src_nick)"; then
+					reply=""
+				elif data_address_size >/dev/null; then
+					if [[ -n "$PRIVADDRESS" ]]; then
+						tx "PRIVMSG $(src_nick) :$PRIVADDRESS"
+						reply=""
+					elif ! cutdata; then
+						reply=""
+					fi
+				fi
+
+			# someone is saying something prefixed by our address character or nick in a channel we're in
+			elif data_address_size >/dev/null; then
+				if cutdata; then
+					reply=$target
+					admin_has "$(src_host)" || floodcheck "$(src_nick)" || reply=""
+				fi
+			fi
+		fi
+
+		# print what we parsed
+		sf_stdoutv "src:    $src"
+		sf_stdoutv "cmd:    $cmd"
+		sf_stdoutv "target: $target"
+		sf_stdoutv "data:   $data"
+		sf_stdoutv "srv:    $srv"
+		sf_stdoutv "reply:  $reply"
+
+		# respond to commands
+		case "$cmd" in
+			PING) tx "PONG $target" ;;
+			CTCP)
+				case "$data" in
+					PING|"PING "*)
+						tx "NOTICE $(src_nick) :"$'\x01'"$data"$'\x01'
+					;;
+					VERSION)
+						if [[ -n "${CUSTOMVERSION:-}" ]]; then
+							tx "NOTICE $(src_nick) :"$'\x01'"$CUSTOMVERSION"$'\x01'
+						else
+							tx "NOTICE $(src_nick) :"$'\x01'"$(IFS=":"; echo -n "${VERSION[*]}"):Bash ${BASH_VERSION}"$'\x01'
+						fi
+					;;
+					TIME)
+						if [[ -n "${CUSTOMTIME:-}" ]]; then
+							tx "NOTICE $(src_nick) :"$'\x01'"$CUSTOMTIME"$'\x01'
+						else
+							tx "NOTICE $(src_nick) :"$'\x01'"$(sf_timestamp)"$'\x01'
+						fi
+					;;
+				esac
+			;;
+			NOTICE)
+				data=${data#$'\x01'}
+				data=${data%$'\x01'}
+				sf_stdoutv "We received a notice"
+			;;
+			NICK)
+				if [[ "$(src_nick)" = "$nick" ]]; then
+					nick=${target#:}
+					sf_stdoutv "This bot is now known as $nick"
+				else
+					sf_stdoutv "$(src_nick) is now known as ${target#:}"
+				fi
+			;;
+			ERROR)
+				if ((state == STATE_SHUTDOWN)); then
+					sf_stdoutv "IRC server closed the connection in response to our QUIT message. Exiting."
+					exit 0
+				else
+					sf_stdout "IRC server reported an error. Exiting."
+					exit 1
+				fi
+			;;
+			$ERR_NICKNAMEINUSE)
+				sf_error "Nickname is already in use."
+				exit 1
+			;;
+			$ERR_UNAVAILRESOURCE)
+				sf_error "Nickname is temporarily unavailable."
+				exit 1
+			;;
+			$RPL_ENDOFMOTD|$ERR_NOMOTD)
+				if ((state == STATE_CONNECTED)); then
+					state=$STATE_RUNNING
+					sf_stdout "State: running"
+				fi
+			;;
+		esac
+
+		# state machine
+		case "$state" in
+			$STATE_INIT)
+				state=$STATE_CONNECTED
+				sf_stdout "State: connected"
+				tx "PASS $PASS"
+				tx "NICK $NICK"
+				tx "USER ${USER} ${MODE} * :${NAME}"
+			;;
+			$STATE_RUNNING)
+				# keep track of the mods we've run - this allows overriding global modules with local ones
+				declare -a bircbot_run=()
+				declare -i bircbot_count=0
+
+				# iterator
+				declare -i bircbot_i
+
+				# fallback nicks, replies and actions - will respond with these, by priority, if nothing else replies directly
+				declare -A bircbot_freplies=()
+				declare -A bircbot_factions=()
+				declare -A bircbot_freplynicks=()
+
+				# go through the modules and run them - local first, then global - mods with names we've already encountered will be skipped
+				for module in "$CONFIG/"*".bmod" "/cathedral/userbin/.bircbot/"*".bmod"; do
+					MOD=${module##*/}
+					MOD=${MOD%.bmod}
+					! $moddebug || sf_stdoutv "ModName: $MOD"
+					for ((bircbot_i=0; bircbot_i<bircbot_count; bircbot_i++)); do
+						if [[ "$MOD" = "${bircbot_run[bircbot_i]}" ]]; then
+							sf_stdoutv "Skipping $MOD - local version already run."
+							continue 2
+						fi
+					done
+					bircbot_run[bircbot_count++]=$MOD
+					source "$module" "$srv" "$src" "$cmd" "$target" "$data"
+				done
+
+				# if transmit count is 0 and we have a reply target, attempt to run fallback actions or fallback replies
+				(( TXCOUNT != 0 )) || [[ -z "$reply" ]] || faction || freply || :
+
+				# update flood control if we've responded with more than one message - we need to count all of them to prevent abuse
+				if ! admin_has "$(src_host)"; then
+					for ((bircbot_i=1; bircbot_i<TXCOUNT; bircbot_i++)); do
+						floodcheck "$(src_nick)" true || :
+					done
+				fi
+			;;
+		esac
+
+		# print txcount if non-zero
+		((TXCOUNT == 0)) || sf_stdoutv "TXCOUNT: $TXCOUNT"
+
+	# no input to read - do the tick if a second has passed
+	elif (( SECONDS > tick )); then
+		tick
+
+		if $TICKMOD; then
+			# keep track of the mods we've run - this allows overriding global modules with local ones
+			declare -a bircbot_run=()
+			declare -i bircbot_count=0
+
+			# iterator
+			declare -i bircbot_i
+
+			# fallback nicks, replies and actions - will respond with these, by priority, if nothing else replies directly
+			declare -A bircbot_freplies=()
+			declare -A bircbot_factions=()
+			declare -A bircbot_freplynicks=()
+
+			# go through the modules and run them - local first, then global - mods with names we've already encountered will be skipped
+			for module in "$CONFIG/"*".bmod" "/cathedral/userbin/.bircbot/"*".bmod"; do
+				MOD=${module##*/}
+				MOD=${MOD%.bmod}
+				! $moddebug || sf_stdoutv "Tick ModName: $MOD"
+				for ((bircbot_i=0; bircbot_i<bircbot_count; bircbot_i++)); do
+					if [[ "$MOD" = "${bircbot_run[bircbot_i]}" ]]; then
+						sf_stdoutv "Skipping $MOD - local version already run."
+						continue 2
+					fi
+				done
+				bircbot_run[bircbot_count++]=$MOD
+				if type -t "${MOD}_tick" | grep -q "function"; then
+					eval "${MOD}_tick"
+				fi
+			done
+		fi
+
+	# nothing has happened at all - sleep!
+	else
+		sleep $RELAX
+	fi
+done
