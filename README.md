@@ -1,5 +1,7 @@
 # xinfo
-Official xShellz Bot (xinfo) written in bash which interacts with PHP.
+Official xShellz IRC Bot (xinfo) written in bash which interacts with PHP.
+
+You just simply type ./bircbot and bot will start.
 
 Bash script is written by bolt
 
