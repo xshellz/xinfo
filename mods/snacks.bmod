@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Copyright 2014 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+function snacks_give
+{
+	local s=$1 r=$2
+	case "$((RANDOM%5))" in
+		0) action "$reply" "hands $r a $s - Here you go!" ;;
+		1) action "$reply" "lobs a $s over to $r - ENJOY!" ;;
+		2) action "$reply" "dispenses a $s to $r" ;;
+		3) action "$reply" "summons a $s for $r" ;;
+		4) action "$reply" "fetches a $s for $r" ;;
+	esac
+}
+
+if [[ -z "${snacks_menu[*]:-}" ]]; then
+	snacks_menu=(
+		beer
+		boar
+		burger
+		cake
+		cigar
+		cigarette
+		cookie
+		coke
+		donkey
+		donut
+		icecream
+		lighter
+		medal
+		milk
+		painkiller
+		pizza
+		snack
+		soda
+		taco
+		trophy
+		vodka
+		whiskey
+	)
+fi
+
+if [[ -n "$reply" ]]; then
+	case "$data" in
+		snacks|menu)
+			snacks_s=""
+			for snacks_item in "${snacks_menu[@]}"; do
+				[[ "$snacks_item" != "snack" ]] || continue
+				snacks_s+="${snacks_item^} - \$$((RANDOM%120+1)), "
+			done
+			reply "Today's menu: ${snacks_s%,*}"
+		;;
+		*)
+			for snacks_item in "${snacks_menu[@]}"; do
+				if [[ "${data,,}" = "${snacks_item} "* ]]; then
+					read -r snacks_1 snacks_2 <<<"$data"
+					if [[ -n "$snacks_2" ]]; then
+						snacks_give "${snacks_1,,}" "$snacks_2"
+					fi
+					break
+				fi
+			done
+		;;
+	esac
+fi
