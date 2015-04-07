@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.	If not, see <http://www.gnu.org/licenses/>.
+
+# Copyright 2014 - Øyvind 'bolt' Hvidsten	<bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+isset idle_wants || declare -a idle_wants=()
+isset idle_probe_wants || declare -a idle_probe_wants=()
+
+function idle_do
+{
+	local nick junk
+	read -r nick junk <<<"$@"
+	if [[ -n "$junk" ]]; then
+		reply "Usage: idle <username>"
+		return
+	fi
+
+	local found=false
+	local i j
+	for i in "${!channel_names[@]}"; do
+		IFS=" " read -ra list <<<"${channel_names["$i"]}"
+		for j in "${!list[@]}"; do
+			if [[ "${list[$j],,}" = "$nick" ]]; then
+				found=true
+				break 2
+			fi
+		done
+	done
+
+	if ! $found && ! admin_has "$(src_host)"; then
+		reply "I don't see $nick in any of the channels I'm in, and you are not an admin. Sorry."
+		return
+	fi
+	
+	local a b c d
+	for i in "${!idle_wants[@]}"; do
+		line=${idle_wants[i]}
+		IFS=" " read -r a b c d <<<"$line"
+		if [[ "$(src_nick)" = "$c" ]] && [[ "$nick" = "$d" ]]; then
+			reply "Be patient!"
+			return
+		fi
+	done
+
+	reply "Checking..."
+
+	idle_wants+=( "$(sf_unixtime) ${reply} $(src_nick) ${nick}" )
+
+	tx "PRIVMSG $nick :"$'\x01'"FINGER"$'\x01'
+}
+
+function probe_do
+{
+	local nick junk
+	read -r nick junk <<<"$@"
+	if [[ -n "$junk" ]]; then
+		reply "Usage: probe <username>"
+		return
+	fi
+
+	local a b c d
+	for i in "${!idle_probe_wants[@]}"; do
+		line=${idle_probe_wants[i]}
+		IFS=" " read -r a b c d <<<"$line"
+		if [[ "$(src_nick)" = "$c" ]] && [[ "$nick" = "$d" ]]; then
+			reply "Be patient!"
+			return
+		fi
+	done
+
+	reply "Probing..."
+
+	local verb
+	for verb in FINGER VERSION SOURCE USERINFO CLIENTINFO PING TIME; do
+		tx "PRIVMSG $nick :"$'\x01'"$verb"$'\x01'
+		sleep 4
+	done
+
+	# added after the fact, since we're single threaded anyway, and we want the timestamp from after the probes were sent
+	idle_probe_wants+=( "$(sf_unixtime) ${reply} $(src_nick) ${nick}" )
+}
+
+function idle_reply_do
+{
+	[[ "$data" = "FINGER "* ]] || return 1
+	[[ -n "${idle_wants[*]:-}" ]] || return 1
+	local src_nick=$(src_nick) tmp i line
+	src_nick=${src_nick,,}
+	for i in "${!idle_wants[@]}"; do
+		line=${idle_wants[i]}
+		IFS=" " read -r timestamp reply reply_nick target <<<"$line"
+		tmp=${target,,}
+		if [[ "${tmp}" = "$src_nick" ]]; then
+			unset "idle_wants[i]"
+			read -r tmp <<<"${data#FINGER }"
+			reply="$reply" reply_nick="$reply_nick" reply "$(src_nick) told me: $tmp"
+			return 0
+		fi
+	done
+	return 1
+}
+
+function idle_probe_reply_do
+{
+	[[ -n "${idle_probe_wants[*]:-}" ]] || return 0
+	local src_nick=$(src_nick) tmp verb stuff line
+	src_nick=${src_nick,,}
+	for line in "${idle_probe_wants[@]}"; do
+		IFS=" " read -r timestamp reply reply_nick target <<<"$line"
+		tmp=${target,,}
+		if [[ "${tmp}" = "$src_nick" ]]; then
+			read -r verb stuff <<<"$data"
+			reply="$reply" reply_nick="$reply_nick" reply "$(src_nick) told me (${verb}): $stuff"
+		fi
+	done
+}
+
+function idle_tick
+{
+	local i line timestamp reply reply_nick target
+	if [[ -n "${idle_wants[*]:-}" ]]; then
+		for i in "${!idle_wants[@]}"; do
+			line=${idle_wants[i]}
+			IFS=" " read -r timestamp reply reply_nick target <<<"$line"
+			if (( timestamp + 7 < $(sf_unixtime) )); then
+				unset "idle_wants[i]"
+				reply="$reply" reply_nick="$reply_nick" reply "Timeout ($target)"
+			fi
+		done
+	fi
+	if [[ -n "${idle_probe_wants[*]:-}" ]]; then
+		for i in "${!idle_probe_wants[@]}"; do
+			line=${idle_probe_wants[i]}
+			IFS=" " read -r timestamp reply reply_nick target <<<"$line"
+			if (( timestamp + 5 < $(sf_unixtime) )); then
+				unset "idle_probe_wants[i]"
+				reply="$reply" reply_nick="$reply_nick" reply "Probe done ($target)"
+			fi
+		done
+	fi
+}
+
+if [[ -n "$reply" ]]; then
+	case "$data" in
+		"idle")
+			reply "Usage: idle <username>"
+		;;
+		"idle "*)
+			if [[ "$reply" != "#"* ]] && ! admin_has "$(src_host)"; then
+				reply "This command is only available in a channel"
+			elif [[ -n "${data#idle }" ]]; then
+				idle_do "${data#idle }"
+			fi
+		;;
+		"probe")
+			reply "Usage: probe <username>"
+		;;
+		"probe "*)
+			if admin_verbosehas "$(src_host)" && [[ -n "${data#probe }" ]]; then
+				probe_do "${data#probe }"
+			fi
+		;;
+	esac
+elif [[ "$cmd" = "NOTICE" ]]; then
+	while idle_reply_do; do :; done
+	idle_probe_reply_do
+fi
