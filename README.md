@@ -1,0 +1,2 @@
+# xinfo
+xShellz Bot
