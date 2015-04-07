@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Copyright 2014 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+if [[ -z "${uptime_last:-}" ]]; then
+	uptime_last=0
+fi
+
+function uptime_tick
+{
+	local minutes=$((SECONDS/60))
+	if ((minutes <= uptime_last)); then
+		return
+	fi
+	uptime_last=$minutes
+	local limit=${UPTIME_LIMIT:-0}
+	if ((limit <= 0)) || ((minutes < limit)); then
+		return
+	fi
+	if [[ -z "${current_channels[*]:-}" ]]; then
+		return
+	fi
+	local chance=$(sf_math_max 0 $(sf_math_min 100 ${UPTIME_STOPCHANCE:-100}))
+	if ((RANDOM%100+1 > chance)); then
+		return
+	fi
+	if [[ -n "${UPTIME_MESSAGE:-}" ]]; then
+		say_all "$UPTIME_MESSAGE"
+	fi
+	sf_stdout "Exiting because of \$UPTIME_LIMIT"
+	clean_exit
+}
+
+function uptime_reply
+{
+	local uptime
+	IFS=" " read -ra uptime <<<"$(uptime)"
+	reply "${uptime[*]}"
+	reply "This bot has been running for $(sf_seconds2dayslong $SECONDS)."
+}
+
+if [[ -n "$reply" ]]; then
+	case "$data" in
+		uptime)
+			uptime_reply
+		;;
+		host)
+			reply "I am running on $(sf_hostname -f)"
+		;;
+	esac
+fi
