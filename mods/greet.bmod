@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.	If not, see <http://www.gnu.org/licenses/>.
+
+# Copyright 2012 - Øyvind 'bolt' Hvidsten	<bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+function greet_do
+{
+	local name=$1 channel=$2
+	read -r name <<<"$name"
+	case "$((RANDOM%10))" in
+		0|1|2) say "$channel" "Hello, $name." ;;
+		3|4|5) say "$channel" "Hi, $name." ;;
+			6) say "$channel" "Greetings, $name!" ;;
+			7) say "$channel" "How are you, $name?" ;;
+			8) say "$channel" "I recognize the presence of $name." ;;
+			9) say "$channel" "$name, everyone! All hail $name!" ;;
+			*) say "$channel" "My owner totally screwed up the greeting mod!" ;;
+	esac
+}
+
+case "$cmd" in
+	PRIVMSG)
+		if	   
+			[[ "$target" = "#"* ]] &&
+			[[ -z "$reply" ]] &&
+			[[ -n "$data" ]]
+		then
+			for i in "${GREET_STATEMENTS[@]:-}"; do
+				if [[ "${data,,}" = "${i,,}" ]]; then
+					greet_do "$(src_nick)" "$target"
+					break
+				fi
+			done
+		fi
+	;;
+esac
+
+if [[ -n "$reply" ]]; then
+	case "$data" in
+		"greet "*)
+			if [[ -n "${data#greet }" ]]; then
+				greet_do "${data#greet }" "$reply"
+			fi
+		;;
+	esac
+fi
