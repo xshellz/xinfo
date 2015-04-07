@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Copyright 2013 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+if [[ -n "$reply" ]]; then
+	case "$data" in
+		"debug")
+			if admin_verbosehas "$(src_host)"; then
+				if ! $_sf_verbose; then
+					reply "Debug mode: On"
+					_sf_verbose=true
+				else
+					reply "Debug mode: Off"
+					_sf_verbose=false
+				fi
+			fi
+		;;
+		"moddebug")
+			if admin_verbosehas "$(src_host)"; then
+				if ! $moddebug; then
+					reply "Mod debug: On"
+					moddebug=true
+				else
+					reply "Mod debug: Off"
+					moddebug=false
+				fi
+			fi
+		;;
+		"cmddebug")
+			if admin_verbosehas "$(src_host)"; then
+				if [[ "$-" != *"x"* ]]; then
+					reply "Cmd debug: On"
+					set -x
+				else
+					reply "Cmd debug: Off"
+					set +x
+				fi
+			fi
+		;;
+	esac
+fi
