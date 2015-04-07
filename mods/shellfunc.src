@@ -1,0 +1,898 @@
+#!/usr/bin/env bash
+
+############################################################################
+# ShellFunc: Useful shell functions to make scripting easier and more fun  #
+#	THIS IS A SEVERELY CRIPPLED COPY OF SHELLFUNC MADE FOR BIRCBOT ONLY    #
+############################################################################
+
+# include guard (..ish)
+if [[ -z "${_sf_loaded:-}" ]]; then
+	_sf_loaded=true
+else
+	return 0
+fi
+
+# print to stdout
+function sf_stdout { { echo -e "$@"; } 2>/dev/null; }
+function sf_stdoutv { ! ${_sf_verbose:-true} || sf_stdout "$@"; }
+function sf_stdouti { ! sf_interactive || sf_stdout "$@"; }
+
+# print usage
+function sf_usage { sf_stderr "Usage: $@"; }
+
+# output information, warnings and errors to stderr
+function sf_stderr
+{(
+	local options="-e"
+	local type=""
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":eEnt:" opt; do
+		case "$opt" in
+			e|E) ;;		# these options are ignored
+			n)			# these options are passed on
+				options="${options}$opt"
+			;;
+			t)
+				type=$OPTARG
+			;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	sf_stdout ${options} "${type:+"${type}: "}$@" >&2
+)}
+function sf_stderrv { ! ${_sf_verbose:-true} || sf_stderr "$@"; }
+function sf_stderri { ! sf_interactive || sf_stderr "$@"; }
+function sf_info { sf_stderr -t "Info" "$@"; }
+function sf_infov { ! ${_sf_verbose:-true} || sf_info "$@"; }
+function sf_infoi { ! sf_interactive || sf_info "$@"; }
+function sf_warning { sf_stderr -t "Warning" "$@"; }
+function sf_warningv { ! ${_sf_verbose:-true} || sf_warning "$@"; }
+function sf_warningi { ! sf_interactive || sf_warning "$@"; }
+function sf_error { sf_stderr -t "Error" "$@"; }
+function sf_errorv { ! ${_sf_verbose:-true} || sf_error "$@"; }
+function sf_errori { ! sf_interactive || sf_error "$@"; }
+
+# error messages
+function sf_error_unknown_option { sf_error "Unknown option -${OPTARG}"; }
+function sf_warning_unknown_option { sf_warning "Unknown option -${OPTARG}"; }
+function sf_error_missing_argument { sf_error "Option -${OPTARG} requires an argument"; }
+
+# get unix time
+function sf_unixtime { date +'%s'; }
+
+# get a standard cathedral timestamp
+function sf_timestamp { date +'%Y-%m-%d %H:%M:%S (%z)'; }
+
+# get the hostname
+function sf_hostname
+{(
+	local full=false
+	local domain=false
+
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":fd" opt; do
+		case "$opt" in
+			f) full=true ;;
+			d) domain=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+	
+	if (( $# != 0 )); then
+		sf_usage "$FUNCNAME [-f]"
+		return 1
+	fi
+
+	exec 2>/dev/null
+
+	if $full; then
+		hostname -f
+	elif $domain; then
+		hostname -d
+	else
+		hostname -s
+	fi
+)}
+
+# hostname in tolower
+function sf_hostname_lower { sf_hostname "$@" | sf_tolower; }
+
+# check if a file is good for reading
+function sf_goodfile
+{(
+	set -e
+	set -u
+
+	_sf_verbose=false
+	local executable=false
+	local writable=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":vwx" opt; do
+		case "$opt" in
+			v) _sf_verbose=true ;;
+			w) writable=true ;;
+			x) executable=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	if (( $# != 1 )); then
+		sf_usage "$FUNCNAME [-v] [-w] [-x] <file>"
+		return 1
+	fi
+	
+	local file="$1"
+	if [[ -h "$file" ]]; then
+		file=$(readlink -f -n "$file")
+		sf_infov "\"$1\" is a symlink pointing to \"$file\""
+	fi
+
+	if ! [[ -e "$file" ]]; then
+		sf_infov "File \"$file\" does not exist!"
+		return 1
+	fi
+
+	if ! [[ -f "$file" ]]; then
+		sf_infov "File \"$file\" is not a regular file!"
+		return 1
+	fi
+
+	if ! [[ -r "$file" ]]; then
+		sf_infov "File \"$file\" is not readable!"
+		return 1
+	fi
+
+	if $writable && ! [[ -w "$file" ]]; then
+		sf_infov "File \"$file\" is not writable!"
+		return 1
+	fi
+
+	if $executable && ! [[ -x "$file" ]]; then
+		sf_infov "File \"$file\" is not executable!"
+		return 1
+	fi
+
+	sf_stdoutv "File \"$file\" is good."
+	return 0
+)}
+
+# check if a directory is any good
+function sf_gooddir
+{(
+	set -e
+	set -u
+
+	_sf_verbose=false
+	local writable=false
+	local executable=true # default true for directories, no way to override this for now
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":vwx" opt; do
+		case "$opt" in
+			v) _sf_verbose=true ;;
+			w) writable=true ;;
+			x) executable=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	if (( $# != 1 )); then
+		sf_usage "$FUNCNAME [-v] [-w] [-x] <dir>"
+		return 1
+	fi
+	
+	local dir="$1"
+	if [[ -h "$dir" ]]; then
+		dir=$(readlink -n "$dir")
+		sf_infov "\"$1\" is a symlink pointing to \"$dir\""
+	fi
+
+	if ! [[ -e "$dir" ]]; then
+		sf_infov "Directory \"$dir\" does not exist!"
+		return 1
+	fi
+
+	if ! [[ -d "$dir" ]]; then
+		sf_infov "Directory \"$dir\" is not a directory!"
+		return 1
+	fi
+
+	if ! [[ -r "$dir" ]]; then
+		sf_infov "Directory \"$dir\" is not readable!"
+		return 1
+	fi
+
+	if $writable && ! [[ -w "$dir" ]]; then
+		sf_infov "Directory \"$dir\" is not writable!"
+		return 1
+	fi
+
+	if $executable && ! [[ -x "$dir" ]]; then
+		sf_infov "Directory \"$dir\" is not executable!"
+		return 1
+	fi
+
+	sf_stdoutv "Directory \"$dir\" is good."
+	return 0
+
+)}
+
+# min
+function sf_math_min
+{
+	if (( $# < 1 )); then
+		sf_usage "$FUNCNAME <integer> [integer] ..."
+		return 1
+	fi
+	local min=$1
+	shift
+	while (($# != 0)); do
+		if (($1 < min)); then
+			min=$1
+		fi
+		shift
+	done
+	echo "$min"
+}
+
+# max
+function sf_math_max
+{
+	if (( $# < 1 )); then
+		sf_usage "$FUNCNAME <integer> [integer] ..."
+		return 1
+	fi
+	local max=$1
+	shift
+	while (($# != 0)); do
+		if (($1 > max)); then
+			max=$1
+		fi
+		shift
+	done
+	echo "$max"
+}
+
+# get current username
+function sf_user
+{
+	if (( $# != 0 )); then
+		sf_usage "$FUNCNAME"
+		return 1
+	fi
+
+	sf_stdout "${USER:-$(whoami)}"
+}
+
+# get os version
+function sf_sysver
+{
+	local os=$(uname -s)
+	case "$os" in
+		Linux)
+			issue=""
+			if sf_goodfile "/etc/redhat-version"; then
+				read -r issue <"/etc/redhat-version" || :	# read returns 1 - newline or EOF
+			elif sf_goodfile "/etc/issue.net"; then
+				read -r issue <"/etc/issue.net" || :			# read returns 1 - newline or EOF
+			fi
+			sf_stdout "${os}${issue:+" ${issue}"}"
+		;;
+		FreeBSD)
+			version=$(uname -r)
+			sf_stdout "${os} ${version}"
+		;;
+		*)
+			sf_stdout "${os}"
+		;;
+	esac
+}
+
+# put a string in lowercase
+function sf_tolower
+{
+	if (( $# == 0 )); then
+		cat | tr '[:upper:]' '[:lower:]'
+	else
+		tr '[:upper:]' '[:lower:]' <<<"$@"
+	fi
+}
+
+# put a string in uppercase
+function sf_toupper
+{
+	if (( $# == 0 )); then
+		cat | tr '[:lower:]' '[:upper:]'
+	else
+		tr '[:lower:]' '[:upper:]' <<<"$@"
+	fi
+}
+
+# get temp dir
+function sf_tmpdir
+{(
+	set -e
+	set -u
+
+	if
+		[ -f "/cathedral/src/tmpenv" ] &&
+		[ -r "/cathedral/src/tmpenv" ]
+	then
+		source /cathedral/src/tmpenv
+	fi
+
+	if (( $# != 0 )); then
+		sf_usage "$FUNCNAME"
+		return 1
+	fi
+
+	sf_stdout "${TMP:-"/tmp"}"
+)}
+
+# ask a yes/no question
+function sf_question
+{(
+	local prenewline=true postnewline=true answer
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":nN" opt; do
+		case "$opt" in
+			n) prenewline=false; postnewline=false ;;
+			N) prenewline=false ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	if (( $# != 1 )); then
+		sf_usage "$FUNCNAME [-n|-N] <question>"
+		return 1
+	fi
+
+	! $prenewline || sf_stderr # empty line
+	read -rp "${1} [y/N] " answer
+	! $postnewline || sf_stderr # empty line
+	case "$(sf_tolower "${answer:-"n"}")" in
+		y|yes)
+			return 0
+		;;
+		*)
+			return 1
+		;;
+	esac
+)}
+
+# check if a variable is an integer
+function sf_integer { sf_number -i -t "an integer" "${@:-"-C $FUNCNAME"}"; }
+
+# check if a variable is a decimal (accepts "1", "1.0", "1." and ".1")
+function sf_decimal { sf_number    -t "a decimal" "${@:-"-C $FUNCNAME"}"; }
+
+# check if a variable is a valid number
+function sf_number
+{(
+	local comma=false
+	local dot=false
+	local allownegative=false
+	local caller=""
+	local error=""
+	local vartype="a number"
+	local quiet=false
+	_sf_verbose=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":cC:de:int:vq" opt; do
+		case "$opt" in
+			c) comma=true ;;
+			C) caller=$OPTARG ;;
+			e) error=$OPTARG; _sf_verbose=true ;;
+			i) dot=true ;;
+			n) allownegative=true ;;
+			t) vartype=$OPTARG ;;
+			v) _sf_verbose=true ;;
+			q) quiet=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+	
+	if $comma && $dot; then
+		sf_error "You should never look for a comma in an integer!"
+		return 1
+	fi
+
+	if (( $# != 1 )); then
+		sf_usage "${caller:-$FUNCNAME} [-c] [-i] [-n] [-t <type>] [-v] [-w <warning>] <value>"
+		return 1
+	fi
+
+	if [[ -z "$error" ]]; then
+		error="\"${1}\" is not ${vartype}!"
+	fi
+
+	if [[ -z "$1" ]]; then
+		sf_errorv "$error"
+		return 1
+	fi
+
+	local end=false
+	while read -r -n 1 -d $'\0' char; do
+		if [[ -z "${char:-}" ]] || $end; then
+			! $end && end=true && continue || { sf_errorv "$error"; return 1; }
+		fi
+		case "$char" in
+			0|1|2|3|4|5|6|7|8|9) ;;
+			.) ! $comma && ! $dot && dot=true || { sf_errorv "$error"; return 1; } ;;
+			,)	 $comma && ! $dot && dot=true || { sf_errorv "$error"; return 1; } ;;
+			-)	 $allownegative || { sf_errorv "$error"; return 1; } ;;
+			*) { sf_errorv "$error"; return 1; } ;;
+		esac
+		allownegative=false
+	done <<<"${1}"
+	$quiet || sf_stdoutv "\"${1}\" is ${vartype}"
+	return 0
+)}
+
+# append a slash to a path if none is there
+function sf_slashpath
+{
+	if (( $# != 1 )); then
+		sf_usage "$FUNCNAME <path>"
+		return 1
+	fi
+
+	local path=${1}
+	[[ "$path" = *"/" ]] || path="${path}/"
+#	case "$path" in */) ;; *) path="${path}/" ;; esac
+
+	sf_stdout "${path}"
+}
+
+# append a dash to a string if none is there
+function sf_dashstring
+{
+	if (( $# != 1 )); then
+		sf_usage "$FUNCNAME <string>"
+		return 1
+	fi
+   
+	local string=${1}
+	[[ $string = *"-" ]] || string="${string}-"
+#	case "$string" in *-) ;; *) string="${string}-" ;; esac
+
+	sf_stdout "${string}"
+}
+
+# create temporary fifo's and files with random names
+# checks for collisions and *should* always succeed
+function sf_mknod
+{
+	# get options
+	local _sf_verbose=false
+	local _fullpath=""
+	local _legacy=false
+	local _name=""
+	local _output=""
+	local _path="$(sf_tmpdir)"
+	local _rmqueue=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":f:ln:o:p:qv" opt; do
+		case "$opt" in
+			f) _fullpath=${OPTARG}; _legacy=true ;;
+			l) _legacy=true ;;
+			n) _name=${OPTARG} ;;
+			o) _output=${OPTARG} ;;
+			p) _path=${OPTARG} ;;
+			q) _rmqueue=true ;;
+			v) _sf_verbose=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	if [[ -z "$_path" ]]; then
+		sf_error "Unable to acquire temp directory!"
+		return 1
+	fi
+
+	case "$_output" in
+		# case ") => ;&" instead of ") => ;;" allows fall-through, but only on bash 4
+		# thus the following line is damn long :)
+		_sf_verbose|_fullpath|_legacy|_name|_output|_path|_rmqueue|_node|_file|OPTIND|OPTARG|OPTERR|opt)
+			sf_error "Invalid variable name: ${_output}"
+			sf_stderr "This variable is used internally in $FUNCNAME and is thus not allowed as an _output variable"
+			return 1
+		;;
+		*)
+			sf_infov "Output goes to \$${_output}"
+		;;
+	esac
+
+	# did we specify the full path?
+	if [[ -n "$_fullpath" ]]; then
+		_name=$(basename "$_fullpath")
+		_path=$(dirname "$_fullpath")
+	fi
+
+	# check node type
+	if (( $# != 1 )); then
+		sf_usage "$FUNCNAME [options] <\"dir\"|\"fifo\"|\"file\">"
+		return 1
+	fi
+	local type=${1}
+	case "$type" in
+		dir)
+			if $_rmqueue; then
+				sf_error "The rmqueue does not support directories!"
+				return 1
+			fi
+			local _name=${_name:-"dir"}
+			_legacy=true
+		;;
+		fifo) local _name=${_name:-"fifo"}; _legacy=true ;;
+		file) local _name=${_name:-"file"} ;;
+		*)
+			sf_error "Unsupported _node type \"$type\""
+			return 1
+		;;
+	esac
+
+	# correct path
+	_path=$(sf_slashpath "$_path")
+	if ! [[ -d "$_path" ]] || ! [[ -w "$_path" ]]; then
+		sf_error "Path \"$_path\" does not exist or can not be written to!"
+		return 1
+	fi
+
+	while true; do
+		local _node="${_path}${_name}"
+		if $_legacy; then
+			if [[ -z "$_fullpath" ]]; then
+				_node="$(sf_dashstring ${_node})${RANDOM}"
+			fi
+			sf_infov "Attempting to make ${type}: \"$_node\""
+		fi
+		case "$type" in
+			dir)
+				(umask 0077 && mkdir "$_node") &>/dev/null && break || :
+			;;
+			fifo)
+				(umask 0077 && mkfifo "$_node") &>/dev/null && break || :
+			;;
+			file)
+				if ! $_legacy; then
+					local _file=$(umask 0077 && mktemp "${_node}-XXXXXX" 2>/dev/null) &&
+					_node=${_file} &&
+					sf_infov "Attempting to make ${type}: \"$_node\"" &&
+					break || :
+				elif ! [[ -e "${_node}" ]]; then
+					(set -C && umask 0077 && >"${_node}") &>/dev/null && break || :
+				fi
+			;;
+		esac
+		sf_infov "Failed to create ${_node}!"
+		if [[ -n "$_fullpath" ]]; then return 1; fi
+		sleep 0.1 || return 1
+	done
+	
+	sf_infov "Success!"
+
+	if $_rmqueue; then
+		if $_sf_verbose; then 
+			sf_rm_queue -v "$_node"
+		else
+			sf_rm_queue "$_node"
+		fi
+	fi
+
+	if [[ -z "$_output" ]]; then
+		sf_stdout "$_node"
+	else
+		printf -v "$_output" "%s" "$_node"
+	fi
+	return 0
+}
+function sf_mkfile { sf_mknod "$@" "file"; }
+function sf_mkfifo { sf_mknod "$@" "fifo"; }
+function sf_mkdir { sf_mknod "$@" "dir"; }
+
+# check if a variable is in an array - usage: sf_inarray "$needle" "${haystack[@]}"
+function sf_inarray
+{
+	local needle=$1 haystack
+	shift
+#	for haystack in "$@"; do
+	for haystack; do
+		[[ "$needle" != "$haystack" ]] || return 0
+	done
+	return 1
+}
+
+# save filename in a list of stuff which is deleted when sf_rm_process runs
+function sf_rm_queue
+{
+	local _sf_verbose=false
+	local printname=false
+	local file
+
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":vV" opt; do
+		case "$opt" in
+			v) _sf_verbose=true ;;
+			V) printname=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+	
+	if (( $# == 0 )); then
+		sf_usage "$FUNCNAME [-vV] <file> [file] ..."
+		return 1
+	fi
+
+	if [[ -z "${sf_rm_array[*]:-}" ]]; then
+		sf_rm_array=()
+		sf_infov "rm_queue is currently empty."
+	else
+		sf_infov "rm_queue currently holds ${#sf_rm_array[*]} item(s)."
+	fi
+
+	while [[ -n "${1:-}" ]]; do
+		if ! [[ -e "$1" ]]; then
+			sf_warning "File \"${1}\" does not exist!"
+			sf_warning "Not adding to rm_queue!"
+			shift
+			continue
+		fi
+		if [[ -n "${sf_rm_array[*]:-}" ]]; then
+			for file in "${sf_rm_array[@]}"; do
+				if [[ "$file" = "$1" ]]; then
+					sf_warning "File \"${1}\" is already in the rm_queue!"
+					sf_warning "Not adding it again!"
+					shift
+					continue 2
+				fi
+			done
+		fi
+#		sf_rm_array=( "${sf_rm_array[@]-}" "${1}" )
+#		sf_rm_array+=( "${1}" ) # bash >=3.1
+		sf_rm_array[${#sf_rm_array[*]}]="$1"
+		sf_infov "\"${1}\" marked for deletion!"
+		if $printname; then sf_stdout "${1}"; fi
+		shift
+	done
+	
+	sf_infov "rm_queue now holds ${#sf_rm_array[*]} item(s)."
+}
+
+# abort removal of a file
+function sf_rm_abort
+{
+	local _sf_verbose=false
+	local printname=false
+
+	local r
+	local i
+	local file
+
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":v" opt; do
+		case "$opt" in
+			v) _sf_verbose=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+	
+	if (( $# == 0 )); then
+		sf_usage "$FUNCNAME [-v] <file> [file] ..."
+		return 1
+	fi
+
+	while [[ -n "${1:-}" ]]; do
+		r=0
+		if [[ -n "${sf_rm_array[*]:-}" ]]; then
+			for file in "${sf_rm_array[@]}"; do
+				if [[ "$file" = "$1" ]]; then
+					sf_infov "Found \"${1}\" as element ${r}"
+					size=${#sf_rm_array[*]}
+					unset "sf_rm_array[$r]"
+					for (( i=r; i < (size-1); i++ )); do
+						sf_rm_array[i]=${sf_rm_array[$((i+1))]}
+					done
+					unset "sf_rm_array[$((size-1))]"
+					sf_infov "Removed. $((size-1)) element(s) remaining in rm_queue."
+					shift
+					continue 2
+				fi
+				let ++r
+			done
+		fi
+		sf_infov "\"${1}\" is not in the rm_queue and can therefore not be removed from it!"
+		shift
+	done
+}
+
+
+# rm items in rm_array
+function sf_rm_process
+{
+	local _sf_verbose=false
+	local file
+
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":v" opt; do
+		case "$opt" in
+			v) _sf_verbose=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+	
+	if (( $# != 0 )); then
+		sf_usage "$FUNCNAME [-v]"
+		return 1
+	fi
+
+	sf_infov "Processing the rm_queue..."
+	if [[ -z "${sf_rm_array[*]:-}" ]]; then
+		sf_infov "The rm_queue is empty. Not doing anything."
+		return 0
+	fi
+	sf_infov "${#sf_rm_array[*]} files to remove..."
+	for file in "${sf_rm_array[@]}"; do
+		rm -f "$file" &&
+		sf_infov "Removed \"$file\""
+	done
+
+	unset sf_rm_array
+
+	sf_infov "Done!"
+}
+
+# convert seconds to days, hours, minutes and seconds
+function sf_seconds2days
+{
+	if (( $# != 1 )) || ! sf_integer -vq "$1"; then
+		return 1
+	fi
+
+	printf "%d days, %02d:%02d:%02d" \
+	$(( $1 / 86400 )) \
+	$(( $1 / 3600 % 24 )) \
+	$(( $1 / 60 % 60 )) \
+	$(( $1 % 60 )) |
+	sed 's/^1\ days/1\ day/;s/^0\ days,\ \(00:\)*//;s/^0//'
+}
+function sf_seconds2dayslong
+{
+	if (( $# != 1 )) || ! sf_integer -vq "$1"; then
+		return 1
+	fi
+	local d=$(( $1 / 86400 ))
+	local h=$(( $1 / 3600 % 24 ))
+	local m=$(( $1 / 60 % 60 ))
+	local s=$(( $1 % 60 ))
+	local out=""
+	if (( d > 1 )); then
+		out="$d days"
+	elif (( d == 1 )); then
+		out="1 day"
+	fi
+	if [[ -n "$out" ]] && (( h+m+s > 0 )); then
+		out="${out}, "
+	fi
+	if (( h > 1 )); then
+		out="${out}$h hours"
+	elif (( h == 1 )); then
+		out="${out}$h hour"
+	fi
+	if [[ -n "$out" ]] && (( h != 0 )) && (( m+s > 0 )); then
+		if (( m > 0 )); then
+			out="${out},"
+		fi
+		out="${out} "
+		if (( m == 0 )) || (( s == 0 )); then
+			out="${out}and "
+		fi
+	fi
+	if (( m > 1 )); then
+		out="${out}$m minutes"
+	elif (( m == 1 )); then
+		out="${out}$m minute"
+	fi
+	if [[ -n "$out" ]] && (( m != 0 )) && (( s > 0 )); then
+		out="${out} and "
+	fi
+	if (( s > 1 )); then
+		out="${out}$s seconds"
+	elif (( s == 1 )); then
+		out="${out}$s second"
+	fi
+	if [[ -z "$out" ]]; then
+		out="0 seconds"
+	fi
+	sf_stdout "$out"
+}
