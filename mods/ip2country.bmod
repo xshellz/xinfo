@@ -1,0 +1,27 @@
+#Bash Module and xShellz API written by StephenS <-> admin@xshellz.com
+
+function ip2country_do
+{
+        local ip2country="${data#ip2country }" json msg
+        json=$(curl https://www.xshellz.com/api/json/$(encode "$ip2country")/ip2country) || :
+        success="$(sf_json "$json" "success")" || :
+        msg="$(sf_json "$json" "msg")" || :
+        if [[ "${success,,}" = "true" ]]; then
+                reply "I can see that IP${data#ip2country} comes from $msg."
+        else
+                reply "Oh well, I cannot locate from what contry IP${data#ip2country} comes from."
+        fi
+}
+
+if [[ -n "$reply" ]]; then
+        case "$data" in
+                "ip2country")
+                        reply "You need one more param, IP!"
+                ;;
+                "ip2country "*)
+                        if [[ -n "${data#ip2country }" ]]; then
+                                ip2country_do
+                        fi
+                ;;
+        esac
+fi
