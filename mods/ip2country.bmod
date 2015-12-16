@@ -1,4 +1,5 @@
 #Bash Module and xShellz API written by StephenS <-> admin@xshellz.com
+#xinfo bash bot written by bolt <-> bolt@dhampir.no
 
 function ip2country_do
 {
