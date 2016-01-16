@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2, June 1991.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
+# or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
+
+# Copyright 2014 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+function httptitle_grab
+{
+	curl -m10 "$@"
+}
+
+function httptitle_do
+{
+	local url words title i loc domain
+	read -r -a words <<<"$@"
+	sf_mkfile -qo tmp
+	for url in "${words[@]}"; do
+		if ! [[ "$url" =~ https?://.+ ]]; then
+			[[ "$url" =~ .+\..+ ]] || continue
+			local domain="${url%%/*}"
+			nslookup "$domain" >/dev/null 2>&1 || continue
+		fi
+		for ((i=0; i<5; i++)); do
+			loc=$(httptitle_grab -I --url "$url" | sed -n 's/^Location: //p' | tr -d '\r\n')
+			[[ -n "$loc" ]] || break
+			url=$loc
+		done
+		httptitle_grab --url "$url" >"$tmp" 2>/dev/null || continue
+		title="$(perl -l -0777 -ne 'print $1 if /<title.*?>\s*(.*?)\s*<\/title/si' 2>/dev/null <"$tmp")"
+		[[ -n "$title" ]] || title="$(file -bN "$tmp")"
+		if type recode >/dev/null 2>&1; then
+			title=$(sf_web2sane <<<"$title")
+		fi
+		domain=$(cut -d\/ -f 3 <<<"$url")
+		domain=${domain#www.*}
+		say "$target" "$title ($domain)"
+	done
+	rm "$tmp"
+	sf_rm_abort "$tmp"
+}
+
+if
+	[[ "$cmd" = "PRIVMSG" ]] &&
+	[[ "$target" = "#"* ]] &&
+	[[ -n "$data" ]] &&
+	[[ -z "$reply" ]]
+then
+	httptitle_do "$data"
+fi

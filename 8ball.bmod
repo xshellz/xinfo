@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2, June 1991.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
+# or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
+
+# Copyright 2012 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+function 8ball_do
+{
+	local q="${data#8ball }"
+	read -r q <<<"${q,,}-$(date +%Y%d%H)" # data "salted" with year, day of month and hour
+	q=$(sha1sum <<<"$q")
+	q=${q//[![:digit:]]/}
+	q=${q:0:8}
+	q=$(( 10#$q % 20 ))
+	case "$q" in
+		 0) reply "It is certain." ;;
+		 1) reply "It is decidedly so." ;;
+		 2) reply "Without a doubt." ;;
+		 3) reply "Yes - definitely." ;;
+		 4) reply "You may rely on it." ;;
+		 5) reply "As I see it, yes." ;;
+		 6) reply "Most likely." ;;
+		 7) reply "Outlook good." ;;
+		 8) reply "Yes." ;;
+		 9) reply "Signs point to \"yes\"." ;;
+		10) reply "Reply hazy, please reformulate the question." ;; # Reply hazy, try again
+		11) reply "Ask again tomorrow." ;; # Ask again later
+		12) reply "Better not tell you now." ;;
+		13) reply "Cannot predict now." ;;
+		14) reply "Concentrate and reformulate the question." ;; # Concentrate and ask again
+		15) reply "Don't count on it." ;;
+		16) reply "My reply is \"no\"." ;;
+		17) reply "My sources say no." ;;
+		18) reply "Outlook not so good." ;;
+		19) reply "Very doubtful." ;;
+		 *) reply "My owner totally screwed up the 8ball mod!" ;;
+	esac
+}
+
+if [[ -n "$reply" ]]; then
+	case "$data" in
+		"8ball")
+			reply "Ask me a question :)"
+		;;
+		"8ball "*)
+			if [[ -n "${data#8ball }" ]]; then
+				8ball_do
+			fi
+		;;
+	esac
+fi

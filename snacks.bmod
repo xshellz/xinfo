@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2, June 1991.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
+# or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
+
+# Copyright 2014 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+function snacks_give
+{
+	local s=$1 r=$2
+	case "$((RANDOM%5))" in
+		0) action "$reply" "hands $r a $s - Here you go!" ;;
+		1) action "$reply" "lobs a $s over to $r - ENJOY!" ;;
+		2) action "$reply" "dispenses a $s to $r" ;;
+		3) action "$reply" "summons a $s for $r" ;;
+		4) action "$reply" "fetches a $s for $r" ;;
+	esac
+}
+
+if [[ -z "${snacks_menu[*]:-}" ]]; then
+	snacks_menu=(
+		beer
+		boar
+		burger
+		cake
+		cigar
+		cigarette
+		coffee
+		cookie
+		coke
+		donkey
+		donut
+		icecream
+		lighter
+		malware
+		medal
+		milk
+		painkiller
+		pizza
+		snack
+		soda
+		taco
+		trophy
+		virus
+		vodka
+		whiskey
+	)
+fi
+
+if [[ -n "$reply" ]]; then
+	case "$data" in
+		snacks|menu)
+			snacks_s=""
+			for snacks_item in "${snacks_menu[@]}"; do
+				case "$snacks_item" in
+					snack|virus|malware) ;;
+					*) snacks_s+="${snacks_item^} - \$$((RANDOM%120+1)), " ;;
+				esac
+			done
+			reply "Today's menu: ${snacks_s%,*}"
+		;;
+		*)
+			read -r snacks_1 snacks_2 <<<"$data"
+			if [[ "$snacks_2" != ">"* ]]; then
+				for snacks_item in "${snacks_menu[@]}"; do
+					if [[ "${data,,}" = "${snacks_item} "* ]]; then
+						if [[ -n "$snacks_2" ]]; then
+							snacks_give "${snacks_1,,}" "$snacks_2"
+						fi
+						break
+					fi
+				done
+			fi
+		;;
+	esac
+fi
