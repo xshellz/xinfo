@@ -178,8 +178,7 @@ function channel_seen
 }
 function channel_unsee
 {
-	local user=$(src_host) channel nick
-	read -r nick <<<"${data#unsee }"
+	local user=$(src_host) nick="$1" channel nick
 	if
 		[[ -z "$nick" ]]
 	then
@@ -231,10 +230,7 @@ function channel_namecount
 }
 function channel_seenquery
 {
-	local seenow=false n nick j list
-	n=${data#seen }
-	n=${n,,}
-	n=${n%% *}
+	local seenow=false n="${1,,}" nc="$1" nick j list
 	nick=$(src_nick)
 	nick=${nick,,}
 	if [[ "$n" = "$nick" ]]; then
@@ -255,7 +251,7 @@ function channel_seenquery
 				reply "I saw $N in $c $(sf_seconds2dayslong $(($(sf_unixtime) - $t))) ago"
 				unset N c t
 			else
-				reply "I have never seen ${data#seen } :("
+				reply "I have never seen ${nc} :("
 			fi
 		fi
 	fi
@@ -357,15 +353,45 @@ esac
 channel_join_configured
 
 if ! ${GHOST:-false} && [[ -n "$reply" ]]; then
-	case "$data" in
+	case "${data_larray[0]}" in
 		headcount)
 			channel_headcountquery
 		;;
-		"seen "*)
-			channel_seenquery
+		"channel_greet")
+			case "${data_larray[1]:-}" in
+				0|off|no|false)
+					if admin_verbosehas "$(src_host)"; then
+						CHANNEL_GREET=false
+						reply "Not greeting new nicks :("
+					fi
+				;;
+				1|on|yes|true)
+					if admin_verbosehas "$(src_host)"; then
+						CHANNEL_GREET=true
+						reply "Greeting new nicks :D"
+					fi
+				;;
+				'')
+					reply "channel_greet: ${CHANNEL_GREET:-false}"
+				;;
+				*)
+					reply "usage: channel_greet [true|false]"
+				;;
+			esac
 		;;
-		"unsee "*)
-			channel_unsee
+		"seen")
+			if (( data_count < 2 )); then
+				reply "Usage: seen <nick>"
+			else
+				channel_seenquery "${data_array[1]}"
+			fi
+		;;
+		"unsee")
+			if (( data_count < 2 )); then
+				reply "Usage: unsee <nick>"
+			else
+				channel_unsee "$(dfrom "unsee")"
+			fi
 		;;
 		"peak")
 			channel_printmax "$target"

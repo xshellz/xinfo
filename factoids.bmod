@@ -5,19 +5,27 @@
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
 # or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
 
-# Copyright 2012,2014 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+# Copyright 2012,2014 - Øyvind 'bolt' Hvidsten	 <bolt@dhampir.no>
 
 ! ${GHOST:-false} || return 0
 
-factoids_factsfile="$CONFIG/factoids_approved.dat"
-factoids_newfactsfile="$CONFIG/factoids_new.dat"
+factoids_factsfile="$CONFIG/factoids.dat"
+# backwards compatibility - import factoids
+if [[ -e "$CONFIG/factoids_new.dat" ]]; then
+	cat "$CONFIG/factoids_new.dat" >>"$factoids_factsfile"
+	mv "$CONFIG/factoids_new.dat" "$CONFIG/factoids_new.dat.old"
+fi
+if [[ -e "$CONFIG/factoids_approved.dat" ]]; then
+	cat "$CONFIG/factoids_approved.dat" >>"$factoids_factsfile"
+	mv "$CONFIG/factoids_approved.dat" "$CONFIG/factoids_approved.dat.old"
+fi
 
 function factoids_error
 {
@@ -41,11 +49,36 @@ function factoids_error
 }
 function factoids_help
 {
-	reply "factoids: info, forget, approve, disapprove, unapprove, lock, unlock, approved, raw, replace..."
+	reply "factoids: info, forget, lock, unlock, raw, replace, search, key, by..."
 }
 function factoids_learn
 {
-	local key=$1 orig creator=$2 value=$3
+	local separator=" " text="$@"
+	case "$text" in
+		":"*)
+			read -r separator text <<<"$text"
+			separator=" ${separator#:} "
+		;;
+		*)
+			read -r text <<<"$text"
+		;;
+	esac
+	if [[ "$text" != *"$separator"* ]]; then
+		reply "Syntax error. Value missing."
+		return
+	fi
+
+	local key="${text%%${separator}*}" value="${text#*${separator}}"
+	local creator="$(src_nick)" orig
+
+	if factoids_islocked "$key"; then
+		return
+	fi
+	if ! [[ "$key" =~ ^[[:alnum:][:punct:]\ ]+$ ]]; then
+		freply ${FACTOIDS_PRIORITY:-0} "No."
+		return
+	fi
+
 	IFS=$'\t' read -r key orig locked creator value <<<"${key,,}"$'\t'"$key"$'\t'"false"$'\t'"$creator"$'\t'"$value"
 	if
 		[[ -z "$key" ]] ||
@@ -54,15 +87,23 @@ function factoids_learn
 		[[ -z "$value" ]]
 	then
 		sf_stdoutv "$MOD: Unable to learn factoid. Invalid input data:"
-		sf_stdoutv "$MOD: key:     $key"
+		sf_stdoutv "$MOD: key:	   $key"
 		sf_stdoutv "$MOD: orig:    $orig"
 		sf_stdoutv "$MOD: creator: $creator"
 		sf_stdoutv "$MOD: value:   $value"
 		factoids_error
 	else
-		factoids_newfacts["$key"]="$orig"$'\t'"$locked"$'\t'"$creator"$'\t'"$value"
+		factoids_facts["$key"]="$orig"$'\t'"$locked"$'\t'"$creator"$'\t'"$value"
 	fi
+
 	factoids_save
+
+	case "$((RANDOM%3))" in
+		0) freply ${FACTOIDS_PRIORITY:-0} "Alright." ;;
+		1) freply ${FACTOIDS_PRIORITY:-0} "Affirmative." ;;
+		2) freply ${FACTOIDS_PRIORITY:-0} "Agreed." ;;
+		*) reply "My owner absolutely screwed up the factoids mod." ;;
+	esac
 }
 function factoids_islocked
 {
@@ -90,9 +131,7 @@ function factoids_lock
 	then
 		orig=$key
 		key=${key,,}
-		if [[ -n "${factoids_newfacts[$key]:-}" ]]; then
-			reply "Only approved factoids with no unapproved siblings can be locked."
-		elif [[ -z "${factoids_facts[$key]:-}" ]]; then
+		if [[ -z "${factoids_facts[$key]:-}" ]]; then
 			reply "Unknown factoid."
 		else
 			IFS=$'\t' read -r orig locked creator value <<<"${factoids_facts[$key]}"
@@ -121,9 +160,7 @@ function factoids_unlock
 	then
 		orig=$key
 		key=${key,,}
-		if [[ -n "${factoids_newfacts[$key]:-}" ]]; then
-			reply "Only approved factoids with no unapproved siblings can be unlocked."
-		elif [[ -z "${factoids_facts[$key]:-}" ]]; then
+		if [[ -z "${factoids_facts[$key]:-}" ]]; then
 			reply "Unknown factoid."
 		else
 			IFS=$'\t' read -r orig locked creator value <<<"${factoids_facts[$key]}"
@@ -138,79 +175,24 @@ function factoids_unlock
 	fi
 	factoids_save
 }
-function factoids_approve
-{
-	local user=$1 data=$2 key orig locked creator value
-	read -r key <<<"$data"
-	if
-		[[ -z "$user" ]] ||
-		[[ -z "$key" ]]
-	then
-		reply "Usage: factoid[s] approve <key>"
-	elif
-		admin_verbosehas "$user"
-	then
-		key=${key,,}
-		if [[ -n "${factoids_newfacts[$key]:-}" ]]; then
-			IFS=$'\t' read -r orig locked creator value <<<"${factoids_newfacts[$key]}"
-			factoids_facts[$key]="${factoids_newfacts[$key]}"
-			unset "factoids_newfacts[$key]"
-			reply "\"$orig\" has been approved."
-		elif [[ -n "${factoids_facts[$key]:-}" ]]; then
-			reply "Already approved."
-		else
-			reply "Unknown factoid."
-		fi
-	fi
-	factoids_save
-}
-function factoids_disapprove
-{
-	local user=$1 data=$2 key orig locked creator value
-	read -r key <<<"$data"
-	if
-		[[ -z "$user" ]] ||
-		[[ -z "$key" ]]
-	then
-		reply "Usage: factoid[s] disapprove <key>"
-	elif
-		admin_verbosehas "$user"
-	then
-		key=${key,,}
-		if [[ -n "${factoids_newfacts[$key]:-}" ]]; then
-			IFS=$'\t' read -r orig locked creator value <<<"${factoids_newfacts[$key]}"
-			reply "\"$orig\" already exists in an unapproved state."
-		elif [[ -n "${factoids_facts[$key]:-}" ]]; then
-			IFS=$'\t' read -r orig locked creator value <<<"${factoids_facts[$key]}"
-			factoids_newfacts[$key]="${factoids_facts[$key]}"
-			unset "factoids_facts[$key]"
-			reply "\"$orig\" has been disapproved."
-		else
-			reply "Unknown factoid."
-		fi
-	fi
-	factoids_save
-}
 function factoids_forget
 {
 	local key=${1,,} orig=$1
 	if [[ -z "$key" ]]; then
 		reply "Usage: factoid[s] forget <key>"
-	elif [[ -z "${factoids_newfacts[$key]:-}" ]]; then
-		if [[ -z "${factoids_facts[$key]:-}" ]]; then
-			reply "Unknown factoid."
-		else
-			reply "\"$orig\" is approved. Disapprove it first."
-		fi
+		return
+	fi
+	if [[ -z "${factoids_facts[$key]:-}" ]]; then
+		reply "Unknown factoid."
 	else
-		unset "factoids_newfacts[$key]"
-		reply "I forgot about the unapproved factoid \"$orig\"."
+		unset "factoids_facts[$key]"
+		reply "I forgot about \"$orig\"."
 	fi
 	factoids_save
 }
 function factoids_replace_reply
 {
-	local req=$1 key=${2,,} orig=$2 value=$3 add safety_check action=false
+	local req=$1 key=${2,,} orig=$2 value=$3 add safety_check action=false rand='<rand\|([^>]+)>' match i alldata v
 	read -r value <<<"$value"
 
 	if ! $factoids_raw; then
@@ -261,15 +243,41 @@ function factoids_replace_reply
 	value="${value//%%/$'\t'}"
 	
 	IFS="%" read -ra safety_check <<<"$value"
-	if (( ${#safety_check[@]} - 1 > ${FACTOIDS_MAXREPLACE:-10} )); then
-		sf_warning "$MOD: Too many replacement opportunities in factoid key \"$key\". Not replacing."
-	elif ! $factoids_raw; then
+	if ! $factoids_raw; then
+		while [[ "$value" =~ $rand ]]; do
+			IFS='|' read -ra match <<<"${BASH_REMATCH[1]}"
+			value="${value/"${BASH_REMATCH[0]}"/"${match[$((RANDOM%${#match[@]}))]}"}"
+		done
+
+		# data replacements
 		value="${value//%a/$ADDRESS}"
 		value="${value//%N/$nick}"
 		value="${value//%n/$req}"
 		value="${value//%o/${OWNER:-}}"
 		value="${value//%t/$(sf_timestamp)}"
 		value="${value//%u/$(sf_unixtime)}"
+
+		# mirc colours
+		value="${value//%x02/$(echo -e "\x02")}"
+		value="${value//%x03/$(echo -e "\x03")}"
+		value="${value//%x09/$(echo -e "\x09")}"
+		value="${value//%x0f/$(echo -e "\x0f")}"
+		value="${value//%x0F/$(echo -e "\x0f")}"
+		value="${value//%x13/$(echo -e "\x13")}"
+		value="${value//%x15/$(echo -e "\x15")}"
+		value="${value//%x16/$(echo -e "\x16")}"
+		value="${value//%x1f/$(echo -e "\x1f")}"
+		value="${value//%x1F/$(echo -e "\x1f")}"
+
+		# input data replacements
+		read -r i alldata <<<"$data"
+		value="${value//%@/${alldata//%/$'\t'}}"
+		for ((i=1; i<10; i++)); do
+			v="${data_array[i]:-}"
+			[[ -n "$v" ]] || break
+			v="${v//%/$'\t'}"
+			value="${value//%${i}/$v}"
+		done
 	fi
 
 	if $factoids_raw; then
@@ -281,6 +289,41 @@ function factoids_replace_reply
 		faction ${FACTOIDS_PRIORITY:-0} "$value"
 	else
 		freply ${FACTOIDS_PRIORITY:-0} "$value"
+	fi
+}
+function factoids_search
+{
+	local lim=10 c=0 results=()
+	local field="$1" skip="$(($2*lim))"
+	shift 2
+	echo "SEARCH: $@"
+	local key s
+	local more=false
+	local orig locked creator value
+	for key in "${!factoids_facts[@]}"; do
+		for s; do
+			IFS=$'\t' read -r orig locked creator value <<<"${factoids_facts[$key]:-}"
+			[[ "${!field,,}" = *"${s,,}"* ]] || continue 2
+		done
+		if (( skip )); then
+			(( skip-- ))
+			continue
+		fi
+		if (( ++c < lim )); then
+			results+=( "$key" )
+		else
+			more=true
+			break
+		fi
+	done
+	if (( c )); then
+		results="\"$(sf_join "\", \"" "${results[@]}")\""
+		if (( c >= lim )); then
+			results+=", ... (and more)"
+		fi
+		reply "Found this for you: $results"
+	else
+		reply "No results :("
 	fi
 }
 function factoids_lookupa
@@ -295,7 +338,7 @@ function factoids_lookup
 {
 	local req=$1 key=${2,,} orig=$2 locked creator value=""
 	[[ -n "$key" ]] || return 1
-	IFS=$'\t' read -r orig locked creator value <<<"${factoids_newfacts[$key]:-}"
+	IFS=$'\t' read -r orig locked creator value <<<"${factoids_facts[$key]:-}"
 	if [[ -n "$value" ]]; then
 		factoids_replace_reply "$req" "$orig" "$value"
 	else
@@ -309,59 +352,32 @@ function factoids_lookup
 }
 function factoids_info
 {
-	local key=${1,,} orig=$1 locked creator value="" new text
-	IFS=$'\t' read -r orig locked creator value <<<"${factoids_newfacts[$key]:-}"
-	if [[ -n "$value" ]]; then
-		new=true
-	else
-		orig=$1
-		new=false
-		IFS=$'\t' read -r orig locked creator value <<<"${factoids_facts[$key]:-}"
+	local key=${1,,} orig=$1 locked creator value="" text
+	IFS=$'\t' read -r orig locked creator value <<<"${factoids_facts[$key]:-}"
+
+	if [[ -z "$value" ]]; then
+		reply "There is no factoid on the subject of \"$1\". Please consider making one."
+		return
 	fi
 
-	if [[ -n "$value" ]]; then
-		text="\"$orig\" was added by \"$creator\"."
-		if $new; then
-			text+=" It is not yet approved by an admin."
-			IFS=$'\t' read -r orig locked creator value <<<"${factoids_facts[$key]:-}"
-			if [[ -n "$value" ]]; then
-				text+=" An approved version, added by \"$creator\", exists too. Tip: !factoids approved <key> shows approved factoids only."
-			else
-				orig=$1
-			fi
-		else
-			if $locked; then
-				text+=" It is locked and approved by an admin."
-			else
-				text+=" It is approved by an admin."
-			fi
-		fi
-		reply "$text"
-	else
-		reply "There is no factoid on the subject of \"$1\". Please consider making one."
+	text="\"$orig\" was added by \"$creator\"."
+	if $locked; then
+		text+=" It is locked."
 	fi
+	reply "$text"
 }
 function factoids_save
 {
 	local t n
 
-    sf_stdoutv "$MOD: Writing $factoids_factsfile"
-    sf_mkfile -qo t 
-    for n in "${!factoids_facts[@]}"; do
-        echo "$n"$'\t'"${factoids_facts["$n"]}" >>"$t"                                                                                                                                                                                                                                                        
-    done
-    cat "$t" >"$factoids_factsfile"
-    rm "$t"
-    sf_rm_abort "$t"
-
-    sf_stdoutv "$MOD: Writing $factoids_newfactsfile"
-    sf_mkfile -qo t 
-    for n in "${!factoids_newfacts[@]}"; do
-        echo "$n"$'\t'"${factoids_newfacts["$n"]}" >>"$t"
-    done
-    cat "$t" >"$factoids_newfactsfile"
-    rm "$t"
-    sf_rm_abort "$t"
+	sf_stdoutv "$MOD: Writing $factoids_factsfile"
+	sf_mkfile -qo t 
+	for n in "${!factoids_facts[@]}"; do
+		echo "$n"$'\t'"${factoids_facts["$n"]}" >>"$t" 
+	done
+	cat "$t" >"$factoids_factsfile"
+	rm "$t"
+	sf_rm_abort "$t"
 }
 function factoids_readfactsfile
 {
@@ -375,89 +391,109 @@ function factoids_readfactsfile
 		sf_stdoutv "$MOD: $factoids_factsfile is missing or no good"
 	fi
 }
-function factoids_readnewfactsfile
-{
-	if sf_goodfile "$factoids_newfactsfile"; then
-		sf_stdoutv "$MOD: Reading $factoids_newfactsfile"
-		local key orig locked creator value
-		while IFS=$'\t' read -r key orig locked creator value; do
-			factoids_newfacts["$key"]="$orig"$'\t'"$locked"$'\t'"$creator"$'\t'"$value"
-		done <"$factoids_newfactsfile"
-	else
-		sf_stdoutv "$MOD: $factoids_newfactsfile is missing or no good"
-	fi
-}
 function factoids_process
 {
-	local data=$data key
-
-	if [[ "$data" = *" is "* ]]; then
-		if ! factoids_islocked "${data%% is *}"; then
-			key=${data%% is *}
-			key="${key//%%/$'\t'}"
-			key="${key//%i/i}"
-			key="${key//$'\t'/%}"
-			if [[ "$key" =~ ^[[:alnum:][:punct:]\ ]+$ ]]; then
-				if factoids_learn "$key" "$(src_nick)" "${data#* is }"; then
-					case "$((RANDOM%3))" in
-						0) freply ${FACTOIDS_PRIORITY:-0} "Alright." ;;
-						1) freply ${FACTOIDS_PRIORITY:-0} "Yes, yes it is." ;;
-						2) freply ${FACTOIDS_PRIORITY:-0} "Agreed." ;;
-						*) reply "My owner absolutely screwed up the factoids mod." ;;
+	if
+		${FACTOIDS_EASYLEARN:-false} &&
+		[[ "$data" = *" is "* ]] &&
+		[[ "${data_larray[0]}" != "learn" ]] &&
+		[[ "${data_larray[0]}" != "learn:"* ]] &&
+		[[ "${data_larray[0]}" != "factoid" ]] &&
+		[[ "${data_larray[0]}" != "factoids" ]]
+	then
+		factoids_learn ":is ${data}"
+	else
+		case "${data_larray[0]}" in
+			factoid|factoids)
+				if (( data_count == 1 )); then
+					factoids_help
+					return
+				elif (( data_count == 2 )); then
+					case "${data_larray[1]}" in
+						reload)
+							if admin_verbosehas "$(src_host)"; then
+								unset factoids_facts
+								reply "Reloaded."
+							fi
+						;;
+						*) factoids_help ;;
+					esac
+				else
+					case "${data_larray[1]}" in
+						info) factoids_info "$(dfrom "info")" ;;
+						forget) factoids_islocked "$(dfrom "forget")" || factoids_forget "$(dfrom "forget")" ;;
+						lock) factoids_lock "$(src_host)" "$(dfrom "lock")" ;;
+						unlock) factoids_unlock "$(src_host)" "$(dfrom "unlock")" ;;
+						learn)
+							factoids_learn "$(dfrom "learn")"
+						;;
+						"learn:"*)
+							factoids_learn ":${data#*:}"
+						;;
+						raw)
+							if
+								! factoids_lookup "$(src_nick)" "$(dfrom "raw")" && ${FACTOIDS_ALWAYS:-false} &&
+								! factoids_lookup "$(src_nick)" "factoids_help" && ${FACTOIDS_ALWAYS:-false}
+							then
+								factoids_error
+							fi
+						;;
+						replace)
+							factoids_replace_reply "$(src_nick)" "dummy" "<reply>In factoids: %%n = requester's nick (%n), %%N = my nick (%N), %%o = owner (%o), %%t = timestamp (%t), %%a = addresschar (%a), %%u = unixtime (%u). To see a factoid without replacements, use \"factoids raw <factoid>\"."
+						;;
+						by)
+							factoids_search "creator" 0 "${data_larray[2]}"
+						;;
+						"by:"*)
+							local skip="${data_larray[1]}"
+							skip="${skip#*:}"
+							if ! sf_integer -vq -- "$skip"; then
+								reply "Invalid skip option"
+								return
+							fi
+							factoids_search "creator" $skip "${data_larray[2]}"
+						;;
+						search|find)
+							factoids_search "value" 0 "$(dfromi 2)"
+						;;
+						"search:"*|"find:"*)
+							local skip="${data_larray[1]}"
+							skip="${skip#*:}"
+							if ! sf_integer -vq -- "$skip"; then
+								reply "Invalid skip option"
+								return
+							fi
+							factoids_search "value" $skip "$(dfromi 2)"
+						;;
+						key)
+							factoids_search "key" "$(dfromi 2)"
+						;;
+						"key:"*)
+							local skip="${data_larray[1]}"
+							skip="${skip#*:}"
+							if ! sf_integer -vq -- "$skip"; then
+								reply "Invalid skip option"
+								return
+							fi
+							factoids_search "key" $skip "$(dfromi 2)"
+						;;
+						*) factoids_help ;;
 					esac
 				fi
-			else
-				freply ${FACTOIDS_PRIORITY:-0} "No."
-			fi
-		fi
-	else
-		data="${data//%%/$'\t'}"
-		data="${data//%i/i}"
-		data="${data//$'\t'/%}"
-
-		case "$data" in
-			"factoids "*|"factoid "*)
-				data="${data#* }"
-				read -r data <<<"$data"
-				case "$data" in
-					"info "*) factoids_info "${data#info }" ;;
-					"forget "*) factoids_islocked "${data#forget }" || factoids_forget "${data#forget }" ;;
-					"approve "*) factoids_islocked "${data#approve }" || factoids_approve "$(src_host)" "${data#approve }" ;;
-					"disapprove "*) factoids_islocked "${data#disapprove }" || factoids_disapprove "$(src_host)" "${data#disapprove }" ;;
-					"unapprove "*) factoids_islocked "${data#unapprove }" || factoids_disapprove "$(src_host)" "${data#unapprove }" ;;
-					"lock "*) factoids_lock "$(src_host)" "${data#lock }" ;;
-					"unlock "*) factoids_unlock "$(src_host)" "${data#unlock }" ;;
-					"reload")
-						if admin_verbosehas "$(src_host)"; then
-							unset factoids_facts
-							unset factoids_newfacts
-							reply "Reloaded."
-						fi
-					;;
-					"approved "*|"raw approved "*)
-						if
-							! factoids_lookupa "$(src_nick)" "${data#*approved }" && ${FACTOIDS_ALWAYS:-false}
-						then
-							reply "No approved version of \"${data#*approved }\""
-						fi
-					;;
-					"raw "*)
-						if
-							! factoids_lookup "$(src_nick)" "${data#raw }" && ${FACTOIDS_ALWAYS:-false} &&
-							! factoids_lookup "$(src_nick)" "factoids_help" && ${FACTOIDS_ALWAYS:-false}
-						then
-							factoids_error
-						fi
-					;;
-					"replace")
-						factoids_replace_reply "$(src_nick)" "dummy" "<reply>In factoids: %%n = requester's nick (%n), %%N = my nick (%N), %%o = owner (%o), %%t = timestamp (%t), %%a = addresschar (%a), %%u = unixtime (%u). To see a factoid without replacements, use \"factoids raw <factoid>\". Also, %i is always replaced with \"i\", allowing you to include the keyword \"is\" and similar as part of a factoid name."
-					;;
-					*) factoids_help ;;
-				esac
 			;;
-			factoid|factoids) factoids_help ;;
+			learn|"learn:"*)
+				if (( data_count > 2 )); then
+					if [[ "${data_larray[0]}" != *":"* ]]; then
+						factoids_learn "$(dfrom "learn")"
+					else
+						factoids_learn ":${data#*:}"
+					fi
+				else
+					factoids_replace_reply "$(src_nick)" "dummy" "<reply>To teach me new things: \"%alearn pizza very good\" would teach me that \"pizza\" is \"very good\". If you want a space in the key, specify a separator after a colon. For example \"%alearn:| my pizza | better than yours\" would teach me that \"my pizza\" is \"better than yours\". Separators don't have to be a single character either: \"%alearn:<split> that other pizza <split> the best\""
+				fi
+			;;
 			*)
-				factoids_req="$(src_nick)"
+				local factoids_req="$(src_nick)"
 				if
 					[[ "$target" = "#"* ]] &&
 					[[ "$data" =~ ^.+\ \>\ ?[^[:space:]]+$ ]]
@@ -466,8 +502,8 @@ function factoids_process
 					read -r data <<<"${data%">"*}"
 				fi
 				reply_nick="$factoids_req"
-				factoids_found=false
-				factoids_data=$data
+				local factoids_found=false
+				local factoids_data=$data
 				while true; do
 					if factoids_lookup "$factoids_req" "$factoids_data"; then
 						factoids_found=true
@@ -497,10 +533,6 @@ function factoids_process
 if [[ -z "${factoids_facts[*]:-}" ]]; then
 	declare -A factoids_facts=()
 	factoids_readfactsfile
-fi
-if [[ -z "${factoids_newfacts[*]:-}" ]]; then
-	declare -A factoids_newfacts=()
-	factoids_readnewfactsfile
 fi
 
 if [[ -n "$reply" ]]; then

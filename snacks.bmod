@@ -71,13 +71,13 @@ if [[ -n "$reply" ]]; then
 			reply "Today's menu: ${snacks_s%,*}"
 		;;
 		*)
-			read -r snacks_1 snacks_2 <<<"$data"
-			if [[ "$snacks_2" != ">"* ]]; then
+			if ((data_count <= 2)); then
+				snacks_1="${data_larray[0]}"
+				snacks_2="${data_array[1]:-$(src_nick)}"
+				[[ "$snacks_2" != ">"* ]] || snacks_2="${snacks_2:1}"
 				for snacks_item in "${snacks_menu[@]}"; do
-					if [[ "${data,,}" = "${snacks_item} "* ]]; then
-						if [[ -n "$snacks_2" ]]; then
-							snacks_give "${snacks_1,,}" "$snacks_2"
-						fi
+					if [[ "$snacks_1" = "$snacks_item" ]]; then
+						snacks_give "$snacks_1" "$snacks_2"
 						break
 					fi
 				done

@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2, June 1991.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
+# or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
+
+# Copyright 2016 - Øyvind 'bolt' Hvidsten	 <bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+karma_file="$CONFIG/karma.dat"
+
+function karma_save
+{
+	local t n
+
+	sf_stdoutv "$MOD: Writing $karma_file"
+	sf_mkfile -qo t 
+	for n in "${!karma[@]}"; do
+		echo "$n"$'\t'"${karma["$n"]}" >>"$t" 
+	done
+	cat "$t" >"$karma_file"
+	rm "$t"
+	sf_rm_abort "$t"
+}
+function karma_load
+{
+	local user points
+	if [[ -e "$karma_file" ]]; then
+		while IFS=$'\t' read -r user points; do
+			karma["$user"]="$points"
+		done <"$karma_file"
+	fi
+}
+function karma_seenow
+{
+	local nick="$1" i j list
+	for i in "${!channel_names[@]}"; do
+		IFS=" " read -ra list <<<"${channel_names["$i"]}"
+		for j in "${!list[@]}"; do
+			if [[ "${list[$j],,}" = "$nick" ]]; then
+				return 0
+			fi
+		done
+	done
+	return 1
+}
+function karma_process
+{
+	local target="$data"
+	target="${target%++}"
+	target="${target%--}"
+	target="${target#++}"
+	target="${target#--}"
+	target="${target%%=*}"
+
+	[[ "$target" != "$data" ]] || return 0
+
+	local low="${target,,}"
+
+	local setto=""	
+	if [[ "$data" = *"="* ]]; then
+		setto="${data#*=}"
+		if ! sf_integer -n -- "$setto"; then
+			return
+		fi
+		if ! admin_verbosehas "$(src_host)"; then
+			return
+		fi
+	fi
+
+	if [[ "$target" != "#"* ]] && ! admin_has "$(src_host)"; then
+		reply "This command can only be used in a channel"
+		return
+	fi
+
+	if ! karma_seenow "$low"; then
+		reply "Sorry, but I don't see $target :("
+		return
+	fi
+
+	local src_nick="$(src_nick)"
+	if [[ "$low" = "${src_nick,,}" ]] && ! admin_has "$(src_host)"; then
+		reply "Don't modify your own karma, you cheater!"
+		return
+	fi
+	
+	local value
+	if [[ -n "$setto" ]]; then
+		value="$setto"
+	else
+		local value="${karma["$low"]:-0}"
+		case "$data" in
+			++*|*++)
+				(( value++ )) || :
+			;;
+			--*|*--)
+				(( value-- )) || :
+			;;
+		esac
+	fi
+
+#	if (( value )); then
+		karma["$low"]="$value"
+#	else
+#		unset "karma[$low]"
+#	fi
+
+	reply "${target} now has a karma of $value"
+
+	karma_save
+}
+function karma_get
+{
+	local nick="$1" low="${1,,}"
+	local value="${karma["$low"]:-0}"
+	if (( value )); then
+		local add=""
+		if (( value >= 10 )); then
+			add='\o/'
+		elif (( value >= 5 )); then
+			add=':D'
+		elif (( value >= 0 )); then
+			add=':)'
+		else
+			add=':('
+		fi
+		reply "${nick} has a karma of ${value} ${add}"
+	else
+		reply "No recorded karma for ${nick}"
+	fi
+}
+function karma_help
+{
+	reply "Usage: karma <nick>"
+	reply "You can add and remove karma with <nick>++ and <nick>--, respectively."
+}
+
+if [[ -z "${karma[*]:-}" ]]; then
+	declare -A karma=()
+	karma_load
+fi
+
+if [[ -n "$reply" ]]; then
+	if (( data_count == 1 )); then
+		if [[ "${data_larray[0]}" = "karma" ]]; then
+			karma_help
+		else
+			karma_process
+		fi
+	elif [[ "${data_larray[0]}" = "karma" ]]; then
+		if (( data_count == 2 )); then
+			karma_get "${data_array[1]}"
+		else
+			karma_help
+		fi
+	fi
+fi

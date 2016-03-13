@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2, June 1991.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
+# or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
+
+# Copyright 2012 - Øyvind 'bolt' Hvidsten	<bolt@dhampir.no>
+
+! ${GHOST:-false} || return 0
+
+function greet_do
+{
+	local name=$1 channel=$2
+	read -r name <<<"$name"
+	case "$((RANDOM%10))" in
+		0|1|2) say "$channel" "Hello, $name." ;;
+		3|4|5) say "$channel" "Hi, $name." ;;
+			6) say "$channel" "Greetings, $name!" ;;
+			7) say "$channel" "How are you, $name?" ;;
+			8) say "$channel" "I recognize the presence of $name." ;;
+			9) say "$channel" "$name, everyone! All hail $name!" ;;
+			*) say "$channel" "My owner totally screwed up the greeting mod!" ;;
+	esac
+}
+
+function banter_do
+{
+	# greet?
+	for i in "${GREET_STATEMENTS[@]:-}"; do
+		if [[ "${data,,}" = "${i,,}" ]]; then
+			greet_do "$(src_nick)" "$target"
+			return
+		fi
+	done
+	case "${data,,}" in
+		*"?")	
+			if ((RANDOM%30 == 0)); then
+				say "$target" "Yes."
+			elif ((RANDOM%30 == 0)); then
+				say "$target" "No."
+			fi
+		;;
+		*"!")	
+			if ((RANDOM%3 == 0)); then
+				say "$target" "Quit shouting!"
+			fi
+		;;
+		*" :dd "*|*":d")
+			say "$target" ":D"
+		;;
+		*" bot "*|*"bot?")
+			if ((RANDOM%3 == 0)); then
+				say "$target" "bot."
+			fi
+		;;
+		"Thanks"|"thanks"|"thank you"|"Thanks you")
+			say "$target" "No! THANK YOU!"
+		;;
+		"ls"|"ls "*)
+			say "$target" "file dir idiot.txt"
+		;;
+		"vi"|"vim"|"nano"|"pico")
+			say "$target" "IRC, the multiplayer text editor!"
+		;;
+		"pwd")	
+			say "$target" "/freenode/#xshellz"
+		;;
+		"what"|"what?")
+			say "$target" "What what (in the bot)?"
+		;;
+		"telnet")
+			say "$target" "Hey, $(src_nick)... 1991 called. They want their technology back."
+		;;
+		"df"|"df "*)
+			say "$target" "One *MILLION* bits!"
+		;;
+		"cd"|"cd "*)
+			say "$target" "I prefer laserdisc"
+		;;
+		"yay"|"wohoo"*)
+			say "$target" "WOHOOO!"
+		;;
+		"bye"|"goodbye"|"bbl")
+			case "$((RANDOM%3))" in
+				0)		
+					say "$target" "bye, $(src_nick)!"
+				;;																																	
+				1)		
+					say "$target" "Have a nice day, $(src_nick)!"
+				;;
+				2)		
+					say "$target" "I'm gonna feel so lonely now :("
+				;;
+			esac
+		;;
+		"lol"|"lolo"*|"heh"|"hehe"*|"hah"|"haha"*|"rofl"*)
+			case "$((RANDOM%5))" in
+				0)		
+					say "$target" "heh"
+				;;
+				1)		
+					say "$target" "hahah"
+				;;
+				2)		
+					say "$target" "mwahahahah!"
+				;;
+				3)		
+					say "$target" "LOLOLOL"
+				;;
+				4)		
+					say "$target" "OMGWTFBBQ!!!1 one"
+				;;
+			esac
+		;;
+		"cat idiot.txt")
+			say "$target" "It says here that you are an idiot, $(src_nick)!"
+		;;
+		"cat")	
+			say "$target" "dog"
+		;;
+		"make") 
+			say "$target" "Make it yourself!"
+		;;
+		"passwd")
+			say "$target" "Enter assword:"
+		;;
+		"exit"|"quit"|"disco")
+			say "$target" "/exit ?"
+		;;
+		".")
+			say "$target" ".."
+		;;
+		"...")
+			say "$target" "I LIKE BIG DOTS AND I CAN NOT LIE!"
+		;;
+		"....")
+			say "$target" "TOO MANY DOTS ON THE DANCEFLOOR!"
+		;;
+		"....."*)
+			say "$target" "Where's pacman when you need him?"
+		;;
+		":")
+			say "$target" "I am NOT a bot!"
+		;;
+		":wq")
+			say "$target" "\"/tmp/dumbass\" written. 0 bytes."
+		;;
+		*)
+			if ((RANDOM%100 == 0)); then
+				say "$target" "$(src_nick) is my new favorite person!"
+			fi
+		;;
+	esac
+}
+
+case "$cmd" in
+	PRIVMSG)
+		if	   
+			${BANTER:-false} &&
+			[[ "$target" = "#"* ]] &&
+			[[ -z "$reply" ]] &&
+			[[ -n "$data" ]]
+		then
+			if
+				[[ -z "${BANTER_CHANNELS:-}" ]] ||
+				sf_inarray "$target" "${BANTER_CHANNELS[@]:-}"
+			then
+				banter_do
+			fi
+		fi
+	;;
+esac
+
+if [[ -n "$reply" ]]; then
+	case "${data_larray[0]}" in
+		greet)
+			if (( data_count < 2 )); then
+				reply "Greet who?"
+			else
+				greet_do "${data_array[1]}" "$reply"
+			fi
+		;;
+		banter)
+			case "${data_array[1]:-}" in
+				0|off|no|false)
+					if admin_verbosehas "$(src_host)"; then
+						BANTER=false
+						reply "Being quiet :("
+					fi
+				;;
+				1|on|yes|true)
+					if admin_verbosehas "$(src_host)"; then
+						BANTER=true
+						reply "Blabbering on :D"
+					fi
+				;;
+				'')
+					reply "banter: ${BANTER:-false}"
+				;;
+				*)
+					reply "usage: banter [true|false]"
+				;;
+			esac
+		;;
+	esac
+fi

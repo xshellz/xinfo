@@ -72,6 +72,8 @@
 #
 # v1.12, 2016-01-16 - Changes to allow bircbot to run from any directory
 #
+# v1.13, 2016-03-13 - Numerous security fixes and general improvements
+#
 
 _scriptname="bircbot"
 set -e
@@ -187,7 +189,7 @@ ADDRESS=${ADDRESS:-"!"}
 PRIVADDRESS=${PRIVADDRESS-"There is no need to address me in a private message. I already know you're talking to me :)"}
 isset CHANNELS || declare -a CHANNELS=()
 MAXLENGTH=${MAXLENGTH:-400}
-VERSION=("BIRCBOT" "v1.10")
+VERSION=("BIRCBOT" "v1.13")
 QUITMSG=${QUITMSG:-"${VERSION[@]}"}
 FLOOD_COUNT=${FLOOD_COUNT:-4}
 FLOOD_TIME=${FLOOD_TIME:-10}
@@ -254,13 +256,6 @@ if (( BASH_VERSINFO[0] < 4 )); then
 	exit 1
 fi
 
-# generate fifo's for communication between subshells
-sf_stdoutv "Generating FIFO's"
-sf_mkfifo -qo tx
-sf_stdoutv "TX: $tx"
-sf_mkfifo -qo rx
-sf_stdoutv "RX: $rx"
-
 # How to curl
 function curl
 {
@@ -282,6 +277,23 @@ function startnetcat
 	state=$STATE_INIT
 	sf_stdout "State: init"
 	unset_on_reset
+
+	# generate fifo's for communication between subshells
+	sf_stdoutv "Generating FIFO's"
+	if [[ -n "${rx:-}" ]]; then
+		rm "$rx"
+		sf_rm_abort "$rx"
+	fi
+	if [[ -n "${tx:-}" ]]; then
+		rm "$tx"
+		sf_rm_abort "$tx"
+	fi
+	sf_mkfifo -qo tx
+	sf_stdoutv "TX: $tx"
+	sf_mkfifo -qo rx
+	sf_stdoutv "RX: $rx"
+
+	# nc!
 	nc${opt} "$SERVER" "$PORT" >"$rx" <"$tx" &
 	exec 3<"$rx" 4>"$tx"
 	ncpid=$!
@@ -294,7 +306,7 @@ startnetcat
 function tx
 {
 	((++TXCOUNT))
-	local text=$@
+	local text="$@"
 	if (( ${#text} > MAXLENGTH )); then
 		sf_warning "Output text limited to $MAXLENGTH characters!"
 		text=${text:0:$MAXLENGTH}
@@ -333,7 +345,7 @@ function faction
 	fi
 	if (( $# != 0 )); then
 		local priority=$1
-		if ! sf_integer -vq "$priority"; then
+		if ! sf_integer -vq -- "$priority"; then
 			sf_error "Invalid priority in call to $FUNCNAME"
 			exit 1
 		fi
@@ -412,7 +424,7 @@ function freply
 	fi
 	if (( $# != 0 )); then
 		local priority=$1
-		if ! sf_integer -vq "$priority"; then
+		if ! sf_integer -vq -- "$priority"; then
 			sf_error "Invalid priority in call to $FUNCNAME"
 			exit 1
 		fi
@@ -572,6 +584,35 @@ function src_host
 	echo -n "${src#*\!}"
 }
 
+# get data from a given case insensitive word
+function dfrom
+{
+	local from="${@,,}"
+	local d="${data,,}"
+	local cut="$data"
+	while [[ -n "$d" ]] && [[ "$d" != "$from "* ]]; do
+		read -r d <<<"${d#* }"
+		read -r cut <<<"${cut#* }"
+	done
+	read -r cut <<<"${cut#* }"
+	echo "$cut"
+}
+
+# get data from a given index
+function dfromi
+{
+	local i="$@"
+	if ! sf_integer -vq -- "$i" || ! (( i )); then
+		sf_error "Invalid index in call to $FUNCNAME"
+		exit 1
+	fi
+	local cut="$data"
+	while (( i-- )); do
+		read -r cut <<<"${cut#* }"
+	done
+	echo "$cut"
+}
+
 # utility function to cut one character off of the right
 # bash 4.2.37 (debian wheezy) has a bug with %?
 # $ a='foo\'; echo ${a%?}
@@ -610,7 +651,7 @@ declare -a tickers=()
 # main loop
 while true; do
 	# attempt to read input
-	if read -t $RELAX -u 3 line; then
+	if read -r -t $RELAX -u 3 line; then
 		# got input - reset timeout
 		last_rx=$SECONDS
 
@@ -619,15 +660,18 @@ while true; do
 
 		# read the line and print it
 		line=${line%$'\r'}
-		sf_stdout "RX: $line"
+		echo "RX: $line"
 
 		# reset variables
-		src=""		# source of message (nick@host)
-		cmd=""		# message type
-		target=""	# target of message (channel, bot...)
-		data=""		# message content
-		reply=""	# where to reply to
-		srv=false	# message is from the server
+		src=""			# source of message (nick@host)
+		cmd=""			# message type
+		target=""		# target of message (channel, bot...)
+		data=""			# message content
+		data_array=()	# message content array
+		data_larray=()	# message content array (lowercase)
+		data_count=0	# message content array length
+		reply=""		# where to reply to
+		srv=false		# message is from the server
 
 		# if the message starts with a colon, read src
 		[[ "$line" != :* ]] || read -r src line <<<"$line"
@@ -684,6 +728,11 @@ while true; do
 				fi
 			fi
 		fi
+
+		# data array
+		read -r -a data_array <<<"$data"
+		read -r -a data_larray <<<"${data,,}"
+		data_count=${#data_array[*]}
 
 		# print what we parsed
 		sf_stdoutv "src:    $src"

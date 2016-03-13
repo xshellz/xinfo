@@ -47,8 +47,10 @@ FLOOD_TIME=10
 PING_TIME=150
 TIMEOUT=300
 
-# GREET
-GREET_STATEMENTS=( "hi" "hello" "helo" "ehlo" )
+# BANTER
+BANTER=false # reply to things said in channels that don't address the bot, like "lol" and "hello"
+BANTER_CHANNELS=( "#debian-bots" ) # where to banter - an empty array means "all"
+BANTER_GREET_STATEMENTS=( "hi" "hello" "helo" "ehlo" )
 
 # RANDOM SHUTDOWN AFTER A GIVEN TIME
 #UPTIME_LIMIT=1440		# minutes
@@ -63,7 +65,7 @@ FACTOIDS_ALWAYS=true	# reply to everything
 FACTOIDS_RECURSIVE=true	# if someone asks about "foo bar" and we only know about "foo", answer with that
 FACTOIDS_HELPFUL=false	# helpful replies on errors
 FACTOIDS_PRIORITY=0		# fallback priority
-FACTOIDS_MAXREPLACE=6	# max replacements in node
+FACTOIDS_EASYLEARN=true	# enables teaching the bot things by saying "a is b", i.e. "pizza is very good". causes problems if people want to use "is" as part of a factoid name
 
 # ARITHMETIC
 ARITHMETIC_PRIORITY=5	# fallback priority

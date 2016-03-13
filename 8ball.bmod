@@ -18,7 +18,7 @@
 
 function 8ball_do
 {
-	local q="${data#8ball }"
+	local q="$(dfromi 1)"
 	read -r q <<<"${q,,}-$(date +%Y%d%H)" # data "salted" with year, day of month and hour
 	q=$(sha1sum <<<"$q")
 	q=${q//[![:digit:]]/}
@@ -49,15 +49,10 @@ function 8ball_do
 	esac
 }
 
-if [[ -n "$reply" ]]; then
-	case "$data" in
-		"8ball")
-			reply "Ask me a question :)"
-		;;
-		"8ball "*)
-			if [[ -n "${data#8ball }" ]]; then
-				8ball_do
-			fi
-		;;
-	esac
+if [[ -n "$reply" ]] && [[ "${data_larray[0]}" = "8ball" ]]; then
+	if (( data_count == 1 )); then
+		reply "Ask me a question :)"
+	else
+		8ball_do
+	fi
 fi

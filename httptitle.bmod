@@ -23,32 +23,36 @@ function httptitle_grab
 
 function httptitle_do
 {
-	local url words title i loc domain
+	local words
 	read -r -a words <<<"$@"
-	sf_mkfile -qo tmp
-	for url in "${words[@]}"; do
-		if ! [[ "$url" =~ https?://.+ ]]; then
-			[[ "$url" =~ .+\..+ ]] || continue
-			local domain="${url%%/*}"
-			nslookup "$domain" >/dev/null 2>&1 || continue
-		fi
-		for ((i=0; i<5; i++)); do
-			loc=$(httptitle_grab -I --url "$url" | sed -n 's/^Location: //p' | tr -d '\r\n')
-			[[ -n "$loc" ]] || break
-			url=$loc
+	(
+		tmp=""
+		trap '[[ -z "$tmp" ]] || rm "$tmp" 2>/dev/null || :' EXIT
+		sf_mkfile -o tmp
+		for url in "${words[@]}"; do
+			if ! [[ "$url" =~ https?://.+ ]]; then
+				[[ "$url" =~ .+\..+ ]] || continue
+				local domain="${url%%/*}"
+				nslookup "$domain" >/dev/null 2>&1 || continue
+			fi
+			for ((i=0; i<5; i++)); do
+				loc=$(httptitle_grab -I --url "$url" | sed -n 's/^Location: //p' | tr -d '\r\n')
+				[[ -n "$loc" ]] || break
+				url=$loc
+			done
+			httptitle_grab --url "$url" >"$tmp" 2>/dev/null || continue
+			title="$(perl -l -0777 -ne 'print $1 if /<title.*?>\s*(.*?)\s*<\/title/si' 2>/dev/null <"$tmp")"
+			[[ -n "$title" ]] || title="$(file -bN "$tmp")"
+			if ! type recode >/dev/null 2>&1; then
+				sf_error "recode is not installed! Can not print http title safely."
+				return
+			fi
+			title=$(sf_web2sane -p <<<"$title" | sf_oneline)
+			domain=$(cut -d\/ -f 3 <<<"$url")						# cut http(s)://
+			[[ "$domain" != *"."*"."* ]] || domain=${domain#www.*}	# cut any www. part
+			echo "$target ${title:0:128} ($domain)" >"$FIFO"
 		done
-		httptitle_grab --url "$url" >"$tmp" 2>/dev/null || continue
-		title="$(perl -l -0777 -ne 'print $1 if /<title.*?>\s*(.*?)\s*<\/title/si' 2>/dev/null <"$tmp")"
-		[[ -n "$title" ]] || title="$(file -bN "$tmp")"
-		if type recode >/dev/null 2>&1; then
-			title=$(sf_web2sane <<<"$title")
-		fi
-		domain=$(cut -d\/ -f 3 <<<"$url")
-		domain=${domain#www.*}
-		say "$target" "$title ($domain)"
-	done
-	rm "$tmp"
-	sf_rm_abort "$tmp"
+	) &
 }
 
 if

@@ -37,21 +37,19 @@ function say_do
 }
 
 if [[ -n "$reply" ]]; then
-	case "$data" in
+	case "${data_larray[0]}" in
 		"say")
-			reply "Say what?"
-		;;
-		"say "*)
-			if [[ -n "${data#say }" ]]; then
-				say_do say "$reply" "${data#say }"
+			if (( data_count == 1 )); then
+				reply "Say what?"
+			else
+				say_do say "$reply" "$(dfromi 1)"
 			fi
 		;;
 		"action")
-			reply "What action?"
-		;;
-		"action "*)
-			if [[ -n "${data#action }" ]]; then
-				say_do action "$reply" "${data#action }"
+			if (( data_count == 1 )); then
+				reply "What action?"
+			else
+				say_do action "$reply" "$(dfromi 1)"
 			fi
 		;;
 	esac

@@ -66,66 +66,80 @@ function admin_verbosehas
 
 function admin_process
 {
-	local a c
-	read -r a c <<<"$data" # admin command
-	read -ra c <<<"$c" # command is an array
-	if
-		[[ -z "$a" ]] ||
-		[[ -z "${c[*]:-}" ]]
-	then
+	if (( data_count < 2 )); then
 		reply "Usage: admin <command>"
-	elif admin_verbosehas "$(src_host)"; then
-		case "${c[0]}" in
-			add)
-				if
-					[[ -z "${c[1]:-}" ]]
-				then
-					reply "Usage: admin add <mask>"
-				else
-					if admin_add "${c[1]}"; then
-						reply "New admin: ${c[1]}"
-					else
-						reply "Unable to add ${c[1]}. Already exists?"
-					fi
-				fi
-			;;
-			remove)
-				if
-					[[ -z "${c[1]:-}" ]]
-				then
-					reply "Usage: admin remove <mask>"
-				elif
-					[[ "${c[1]}" = "${OWNER:-}" ]]
-				then
-					reply "$OWNER is currently set as the owner of this bot and can not be removed from the admin list."
-				else
-					if admin_remove "${c[1]}"; then
-						reply "Admin removed: ${c[1]}"
-					else
-						reply "Unable to remove ${c[1]}. No such user?"
-					fi
-				fi
-			;;
-			owner)
-				reply "My owner is \"$OWNER\""
-			;;
-			test)
-				reply "Success."
-			;;
-			die|shutdown)
-				action_all "dies..."
-				clean_exit
-			;;
-			kill)
-				reply "Killing connection."
-				sleep 1
-				kill -TERM "$ncpid"
-			;;
-			*)
-				reply "Unknown or malformed admin command."
-			;;
-		esac
+		return
 	fi
+	if ! admin_verbosehas "$(src_host)"; then
+		return
+	fi
+	case "${data_larray[1]}" in
+		add)
+			if (( data_count < 3 )); then
+				reply "Usage: admin add <mask>"
+				return
+			fi
+			if admin_add "${data_array[2]}"; then
+				reply "New admin: ${data_array[2]}"
+			else
+				reply "Unable to add ${data_array[2]}. Already exists?"
+			fi
+		;;
+		remove)
+			if (( data_count < 3 )); then
+				reply "Usage: admin remove <mask>"
+				return
+			fi
+			if [[ "${data_array[2]}" = "${OWNER:-}" ]]; then
+				reply "$OWNER is currently set as the owner of this bot and can not be removed from the admin list."
+				return
+			fi
+			if admin_remove "${data_array[2]}"; then
+				reply "Admin removed: ${data_array[2]}"
+			else
+				reply "Unable to remove ${data_array[2]}. No such admin?"
+			fi
+		;;
+		owner)
+			reply "My owner is \"$OWNER\""
+		;;
+		raw)
+			if [[ "$(src_host)" != "${OWNER:-}" ]]; then
+				reply "Only the owner can do that."
+				return
+			fi
+			if (( data_count < 3 )); then
+				reply "Raw what?"
+				return
+			fi
+			local raw="$(dfromi 2)"
+			reply "$raw"
+			tx "$(echo -e "$raw")"
+		;;
+		list)
+			local a
+			while read -r a; do
+				[[ -n "$a" ]] || continue
+				reply "$a"
+				sleep 0.5
+			done <"$adminfile"
+		;;
+		test)
+			reply "Success."
+		;;
+		testkill)
+			reply "Killing connection."
+			sleep 1
+			kill -TERM "$ncpid"
+		;;
+		die|shutdown)
+			action_all "dies..."
+			clean_exit
+		;;
+		*)
+			reply "Unknown or malformed admin command."
+		;;
+	esac
 }
 
 if [[ -n "$reply" ]]; then

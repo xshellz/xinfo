@@ -16,36 +16,65 @@
 
 ! ${GHOST:-false} || return 0
 
+if [[ -z "${bash_file:-}" ]]; then
+	sf_mkfile -qo "bash_file"
+fi
+
 function bash_do
 {
 	if ! type lynx >/dev/null 2>&1; then
 		reply "error - lynx was not found"
 		return
 	fi
-	local line printing=false oldtx=$TXCOUNT
+
+	local url="http://www.bash.org/?"
+	if [[ -z "${@:-}" ]]; then
+		url+="random1"
+	elif sf_integer "$@"; then
+		url+="$@"
+	else
+		url+="search=$(sf_urlencode "$@")"
+	fi
+
+	if
+		! lynx -dump -nolist -nomargins -width=1024 "$url" >"$bash_file" 2>/dev/null ||
+		sf_isemptyfile "$bash_file"
+	then
+		reply "error - no output"
+	fi
+
+	local oldtx=$TXCOUNT
+
+	local line printing=false
 	while read -r line; do
+		read -r line <<<"$line"
 		case "$line" in
 			'') ;;
-			'#'*) $printing && while read -r line; do :; done || printing=true ;;
+			'#'*' +('*')- [X]')
+				$printing || { printing=true; continue; }
+			;&
+			'Search '*'Sort by:'*|\
+			'Home / Latest / Browse / Random'*)
+				! $printing || break
+			;;
 			*)     
 				if $printing; then
 					say "$reply" "$line"
-					sleep 1
+					sleep 0.5
 				fi
 			;;
 		esac
-	done < <(
-		lynx -dump -nolist "http://www.bash.org/?random1" 2>/dev/null
-	)
+	done <"$bash_file"
+
 	if ((oldtx == TXCOUNT )); then
-		reply "error - no output"
+		reply "no result"
 	fi
 }
 
-if [[ -n "$reply" ]]; then
-	case "$data" in
-		"bash")
-			bash_do
-		;;
-	esac
+if [[ -n "$reply" ]] && [[ "${data_larray[0]}" = "bash" ]]; then
+	if (( data_count == 1 )); then
+		bash_do
+	else
+		bash_do "$(dfromi 1)"
+	fi
 fi
