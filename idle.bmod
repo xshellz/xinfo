@@ -56,7 +56,6 @@ function idle_do
 	done
 
 	reply "Checking..."
-
 	idle_wants+=( "$(sf_unixtime) ${reply} $(src_nick) ${nick}" )
 
 	tx "PRIVMSG $nick :"$'\x01'"FINGER"$'\x01'
@@ -82,15 +81,14 @@ function probe_do
 	done
 
 	reply "Probing..."
-
-	local verb
-	for verb in FINGER VERSION SOURCE USERINFO CLIENTINFO TIME; do
-		tx "PRIVMSG $nick :"$'\x01'"$verb"$'\x01'
-		sleep 7
-	done
-
-	# added after the fact, since we're single threaded anyway, and we want the timestamp from after the probes were sent
 	idle_probe_wants+=( "$(sf_unixtime) ${reply} $(src_nick) ${nick}" )
+
+	(
+		for verb in FINGER VERSION SOURCE USERINFO CLIENTINFO TIME; do
+			echo "PRIVMSG $nick :"$'\x01'"$verb"$'\x01' >"$FIFO"
+			sleep 11
+		done
+	) &
 }
 
 function idle_reply_do
@@ -98,6 +96,7 @@ function idle_reply_do
 	[[ "$data" = "FINGER "* ]] || return 1
 	[[ -n "${idle_wants[*]:-}" ]] || return 1
 	local src_nick=$(src_nick) tmp i line
+	local timestamp reply reply_nick target
 	src_nick=${src_nick,,}
 	for i in "${!idle_wants[@]}"; do
 		line=${idle_wants[i]}
@@ -117,6 +116,7 @@ function idle_probe_reply_do
 {
 	[[ -n "${idle_probe_wants[*]:-}" ]] || return 0
 	local src_nick=$(src_nick) tmp verb stuff line
+	local timestamp reply reply_nick target
 	src_nick=${src_nick,,}
 	for line in "${idle_probe_wants[@]}"; do
 		IFS=" " read -r timestamp reply reply_nick target <<<"$line"
@@ -130,7 +130,8 @@ function idle_probe_reply_do
 
 function idle_tick
 {
-	local i line timestamp reply reply_nick target
+	local i line
+	local timestamp reply reply_nick target
 	if [[ -n "${idle_wants[*]:-}" ]]; then
 		for i in "${!idle_wants[@]}"; do
 			line=${idle_wants[i]}
@@ -145,7 +146,7 @@ function idle_tick
 		for i in "${!idle_probe_wants[@]}"; do
 			line=${idle_probe_wants[i]}
 			IFS=" " read -r timestamp reply reply_nick target <<<"$line"
-			if (( timestamp + 5 < $(sf_unixtime) )); then
+			if (( timestamp + (11*6) < $(sf_unixtime) )); then
 				unset "idle_probe_wants[i]"
 				reply="$reply" reply_nick="$reply_nick" reply "Probe done ($target)"
 			fi

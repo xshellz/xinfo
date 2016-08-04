@@ -74,10 +74,15 @@
 #
 # v1.13, 2016-03-13 - Numerous security fixes and general improvements
 #
+# v1.14, 2016-03-28 - FIFO now contains generic messages
+#
 
 _scriptname="bircbot"
 set -e
 set -u
+
+# version
+VERSION=("BIRCBOT" "v1.14")
 
 # statics
 declare -ri STATE_INIT=0
@@ -102,9 +107,13 @@ botdir="$(dirname "${BASH_SOURCE[0]}")"
 ssource /cathedral/src/lib/shellfunc "${botdir}/shellfunc"
 ssource /cathedral/userbin/.bircbot/irccodes.src "${botdir}/irccodes.src"
 
-# require bash 4
-if ((BASH_VERSINFO[0] < 4)); then
-	sf_error "bircbot requires BASH 4 to run"
+# print bircbot version
+sf_stdout "${VERSION[@]}"
+
+# print bash version, and quit if version is too low
+sf_stdout "Running on Bash version: $BASH_VERSION"
+if (( BASH_VERSINFO[0] < 4 )); then
+	sf_error "$_scriptname requires Bash 4 to run!"
 	exit 1
 fi
 
@@ -113,6 +122,9 @@ if ! type "nc" &>/dev/null; then
 	sf_error 'Unable to find the "nc" command. Install NetCat, or modify your $PATH'
 	exit 1
 fi
+
+# get temp dir
+TMP=${TMP:-$(sf_tmpdir)}
 
 # print basic usage instructions
 function printusage
@@ -189,7 +201,6 @@ ADDRESS=${ADDRESS:-"!"}
 PRIVADDRESS=${PRIVADDRESS-"There is no need to address me in a private message. I already know you're talking to me :)"}
 isset CHANNELS || declare -a CHANNELS=()
 MAXLENGTH=${MAXLENGTH:-400}
-VERSION=("BIRCBOT" "v1.13")
 QUITMSG=${QUITMSG:-"${VERSION[@]}"}
 FLOOD_COUNT=${FLOOD_COUNT:-4}
 FLOOD_TIME=${FLOOD_TIME:-10}
@@ -246,15 +257,33 @@ function unset_on_reset
 	return 0
 }
 
-# print bircbot version
-sf_stdout "${VERSION[@]}"
+# how to limit crap
+craplimiter_lock="${TMP}/bircbot_craplimiter_$$.lock"
+function craplimiter
+{(
+	data="$1" id="$2" delay="$3" add="$4"
+	limit=$((SECONDS - delay))
 
-# print bash version, and quit if version is too low
-sf_stdout "Running on Bash version: $BASH_VERSION"
-if (( BASH_VERSINFO[0] < 4 )); then
-	sf_error "$_scriptname is incompatible with this version!"
-	exit 1
-fi
+	sf_force -d 0.5 sf_mkfile -f "$craplimiter_lock" >/dev/null
+	trap "rm \"$craplimiter_lock\"" EXIT
+
+	print=true
+	lines=()
+	while read -r time oid; do
+		(( time > limit )) || continue
+		[[ "$oid" != "$id" ]] || print=false
+		lines+=( "$time $oid" )
+	done <"$data"
+
+	! $add || lines+=( "$SECONDS $id" )
+
+	>"$data"
+	for line in "${lines[@]:-}"; do
+		echo "$line" >>"$data"
+	done
+	
+	$print && exit 0 || exit 1
+)}
 
 # How to curl
 function curl
@@ -611,6 +640,12 @@ function dfromi
 		read -r cut <<<"${cut#* }"
 	done
 	echo "$cut"
+}
+
+# utility function to cut ctcp from text
+function filtertext
+{
+	sed -e 's/^[\x01]//g' <<<"$@"
 }
 
 # utility function to cut one character off of the right

@@ -16,18 +16,34 @@
 
 ! ${GHOST:-false} || return 0
 
-function httptitle_grab
+if ! isset "httptitle_data"; then
+	httptitle_data="$(sf_tmpdir)/httptitle_$$.dat"
+	sf_mkfile -qf "$httptitle_data"
+fi
+
+function httptitle_canprint
 {
-	curl -m10 "$@"
+	local host="$1" add="$2"
+	craplimiter "$httptitle_data" "$host" "${HTTPTITLE_DELAY:-10}" "$add"
 }
+
+function httptitle_grab { curl -f -m10 "$@"; }
 
 function httptitle_do
 {
+	local host=$1
+	shift
+
+	httptitle_canprint "$host" "false" || return 0
+
 	local words
 	read -r -a words <<<"$@"
+
 	(
 		tmp=""
+		count=0
 		trap '[[ -z "$tmp" ]] || rm "$tmp" 2>/dev/null || :' EXIT
+
 		sf_mkfile -o tmp
 		for url in "${words[@]}"; do
 			if ! [[ "$url" =~ https?://.+ ]]; then
@@ -35,12 +51,15 @@ function httptitle_do
 				local domain="${url%%/*}"
 				nslookup "$domain" >/dev/null 2>&1 || continue
 			fi
+
 			for ((i=0; i<5; i++)); do
 				loc=$(httptitle_grab -I --url "$url" | sed -n 's/^Location: //p' | tr -d '\r\n')
 				[[ -n "$loc" ]] || break
 				url=$loc
 			done
+
 			httptitle_grab --url "$url" >"$tmp" 2>/dev/null || continue
+
 			title="$(perl -l -0777 -ne 'print $1 if /<title.*?>\s*(.*?)\s*<\/title/si' 2>/dev/null <"$tmp")"
 			[[ -n "$title" ]] || title="$(file -bN "$tmp")"
 			if ! type recode >/dev/null 2>&1; then
@@ -50,7 +69,10 @@ function httptitle_do
 			title=$(sf_web2sane -p <<<"$title" | sf_oneline)
 			domain=$(cut -d\/ -f 3 <<<"$url")						# cut http(s)://
 			[[ "$domain" != *"."*"."* ]] || domain=${domain#www.*}	# cut any www. part
-			echo "$target ${title:0:128} ($domain)" >"$FIFO"
+			
+			httptitle_canprint "$host" "true" || break
+			echo "PRIVMSG $target :${title:0:128} ($domain)" >"$FIFO"
+			break
 		done
 	) &
 }
@@ -61,5 +83,5 @@ if
 	[[ -n "$data" ]] &&
 	[[ -z "$reply" ]]
 then
-	httptitle_do "$data"
+	httptitle_do "$(src_host)" "$data"
 fi

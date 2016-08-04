@@ -55,16 +55,16 @@ function karma_seenow
 }
 function karma_process
 {
-	local target="$data"
-	target="${target%++}"
-	target="${target%--}"
-	target="${target#++}"
-	target="${target#--}"
-	target="${target%%=*}"
+	local user="$data"
+	user="${user%++}"
+	user="${user%--}"
+	user="${user#++}"
+	user="${user#--}"
+	user="${user%%=*}"
 
-	[[ "$target" != "$data" ]] || return 0
+	[[ "$user" != "$data" ]] || return 0
 
-	local low="${target,,}"
+	local low="${user,,}"
 
 	local setto=""	
 	if [[ "$data" = *"="* ]]; then
@@ -83,7 +83,7 @@ function karma_process
 	fi
 
 	if ! karma_seenow "$low"; then
-		reply "Sorry, but I don't see $target :("
+		reply "Sorry, but I don't see $user :("
 		return
 	fi
 
@@ -114,7 +114,7 @@ function karma_process
 #		unset "karma[$low]"
 #	fi
 
-	reply "${target} now has a karma of $value"
+	reply "${user} now has a karma of $value"
 
 	karma_save
 }

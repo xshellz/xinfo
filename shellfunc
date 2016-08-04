@@ -5,21 +5,21 @@
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>
 
-# Copyright 2006-2016 - Cathedral Networks   <admin@cathedral-networks.org>
+# Copyright 2006-2016 - Cathedral Networks	 <admin@cathedral-networks.org>
 
 # Description:
 #
 # Somewhat useful shell functions, mostly developed for internal use
 #
 # Please note: Some of these are likely broken, or written to suit a very
-#              specialized scenario. Please read each function carefully
-#              before use, to ensure you know what it does
+#			   specialized scenario. Please read each function carefully
+#			   before use, to ensure you know what it does
 #
 
 # include guard (..ish)
@@ -421,14 +421,13 @@ function sf_dmtime
 # trim whitespace
 function sf_trim
 {
-	if (( $# == 0 )); then
-		local line
-		while read -r line; do
-			echo "$line"
-		done
-	else
-		echo "$@"
-	fi
+	{
+		if ! (( $# )); then
+			cat
+		else
+			echo "$@"
+		fi
+	} | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
 # count down
@@ -543,6 +542,22 @@ function sf_inarray
 		[[ "$needle" != "$haystack" ]] || return 0
 	done
 	return 1
+}
+
+# join array elements to a string using a given separator
+function sf_join
+{
+	if (( $# < 2 )); then
+		sf_usage "$FUNCNAME <separator> <array>"
+		return 1
+	fi
+	local sep=$1 i
+	echo -n "$2"
+	shift 2
+	for i; do
+		echo -n "${sep}${i}"
+	done
+	echo
 }
 
 # make a string safe to sed with
@@ -1165,10 +1180,11 @@ function sf_pidfile
 	local _sf_verbose=false
 	local killtimeout=""
 	local rmqueue=false
+	local quiet=false
 	local argv=("$@")
 
 	local OPTIND=1 OPTARG OPTERR opt
-	while getopts ":k:qv" opt; do
+	while getopts ":k:qQv" opt; do
 		case "$opt" in
 			k)
 				killtimeout=$OPTARG
@@ -1177,6 +1193,7 @@ function sf_pidfile
 				fi
 			;;
 			q) rmqueue=true ;;
+			Q) quiet=true ;;
 			v) _sf_verbose=true ;;
 			[?])
 				sf_error_unknown_option
@@ -1233,7 +1250,7 @@ function sf_pidfile
 				fi
 
 				# return existing pid
-				sf_stdout "$pid"
+				$quiet || sf_stdout "$pid"
 				return 1
 			fi
 		fi
@@ -1347,6 +1364,56 @@ function sf_urlencode
 	echo "${encoded%\%0a}"
 }
 
+# get a value from the query string global
+function sf_query
+{
+	local empty=false
+	local base64=false
+	local lower=false
+	local null=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":belu" opt; do
+		case "$opt" in
+			b) base64=true ;;
+			e) empty=true ;;
+			l) lower=true ;;
+			u) null=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	if (( $# != 1 )); then
+		sf_usage "$FUNCNAME <key>"
+		return 1
+	fi
+
+	local key=${1,,}
+
+	while IFS='=' read -r -d '&' ikey value; do
+	    [[ "${ikey,,}" = "$key" ]] || continue
+		$empty || [[ -n "$value" ]] || return 1
+		! $base64 || value=$(sf_web64decode <<<"$value")
+		! $lower || value=${value,,}
+		echo "$value"
+		return 0
+	done <<<"${QUERY_STRING:+"${QUERY_STRING}&"}"
+	
+	if $null; then
+		echo
+		return 0
+	fi
+
+	return 1
+}
 
 # hostname in tolower
 function sf_hostname_lower { sf_hostname "$@" | sf_tolower; }
@@ -1448,13 +1515,7 @@ function sf_hosthasuser
 		return 1
 	fi
 
-	local file="/etc/passwd"
-
-	if ! sf_goodfile -v "$file" >/dev/null; then
-		return 1
-	fi
-
-	local line=$(grep "^${1}:" "$file")
+	local line=$(sf_passwdline "$1") || :
 
 	if [[ -z "$line" ]]; then
 		return 1
@@ -1474,13 +1535,25 @@ function sf_ppid
 	echo $(ps -p ${1:-$$} -o ppid=)
 }
 
-# test a tar.gz file's integrity
-function sf_tgztest
+# test a file's integrity
+function sf_verifydata
 {
-	if (( $# < 1 )); then
-		sf_usage "$FUNCNAME <file> [part] ..."
+	if (( $# < 2 )); then
+		sf_usage "$FUNCNAME <format> <file> [part] ..."
 		return 1
 	fi
+	format=$1
+	shift
+	local cmd
+	case "$format" in
+		tgz) cmd="tar zxOf -" ;;
+		gz) cmd="gunzip" ;;
+		*)
+			sf_error "Unknown format: $format"
+			return 1
+		;;
+	esac
+
 	local file total_size=0
 	for file in "$@"; do
 		sf_stdout "Testing $file ..."
@@ -1495,11 +1568,11 @@ function sf_tgztest
 		fi
 	done
 	if (($# > 1)); then
-		sf_stdout "Testing joined archive integrity"
+		sf_stdout "Testing joined file integrity"
 	fi
-	if ! cat "$@" | tar zxOf - &>/dev/null; then
-		sf_error "Error while extracting archive"
-		sf_stderr "Archive integrity compromized!"
+	if ! cat "$@" | $cmd &>/dev/null; then
+		sf_error "Error while verifying file contents"
+		sf_stderr "File integrity compromized!"
 		return 1
 	fi
 	if (($# == 1)); then
@@ -1508,6 +1581,9 @@ function sf_tgztest
 		sf_stdout "Files are OK - $total_size bytes"
 	fi
 }
+
+# test a tar.gz file's integrity
+function sf_tgztest { sf_verifydata "tgz" "$@"; }
 
 # split files in gigabyte size chunks
 function sf_gigsplit
@@ -1535,12 +1611,12 @@ function sf_timeout
 
 	(
 		set +e
-		exec 3>&2
+		exec {fd}>&2
 		{
-			timeout -s9 $duration "$@" 2>&3
+			timeout -s9 $duration "$@" 2>&${fd}
 		} 2>/dev/null
 		res=$?
-		exec 3>&-
+		exec {fd}>&-
 		exit $res
 	)
 }
@@ -1794,11 +1870,12 @@ function sf_user
 # try to sanitize http lines
 function sf_web2sane
 {
-	local line filter=false
+	local line filter=false printable=false
 	local OPTIND=1 OPTARG OPTERR opt
-	while getopts ":f" opt; do
+	while getopts ":fp" opt; do
 		case "$opt" in
 			f) filter=true ;;
+			p) printable=true ;;
 			[?])
 				sf_error_unknown_option
 				return 1
@@ -1824,8 +1901,45 @@ function sf_web2sane
 		if $filter; then
 			line=$(recode -f "utf8..iso8859-15" <<<"$line" | recode "iso8859-15..utf8")
 		fi
+		if $printable; then
+			line=$(sed -e 's/[^[:print:]]//g' <<<"$line")
+		fi
 		echo "$line"
 	done
+}
+
+# remove newlines
+function sf_oneline
+{
+	local escape=false
+	OPTIND=1
+	while getopts ":e" opt; do
+		case "$opt" in
+			e) escape=true ;;
+			[?])
+				echo "Unknown option -${OPTARG}" >&2
+				return 1
+			;;
+			:)	
+				echo "Option -${OPTARG} requires an argument" >&2
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	local first=true line
+	while read -r line; do
+		[[ -n "$line" ]] || continue
+		$first && first=false || echo -n " "
+		if $escape; then
+			echo -n "$line" | sf_escape
+		else
+			echo -n "$line"
+		fi
+	done
+	echo
 }
 
 # do something until it works
@@ -1886,9 +2000,33 @@ function sf_force1
 # generate a random password
 function sf_randpass
 {
-	local chars='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!"#%&,.-;:_()=?@€£${[]}'
+	local alnum='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+	local special='!"#%&,.-;:_()=?@€£${[]}'
+	local chars=$alnum
+	local count=8
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":c:s" opt; do
+		case "$opt" in
+			c)
+				sf_integer -v -- "$OPTARG" >/dev/null || return 1
+				count=$OPTARG
+			;;
+			s) chars="${alnum}${special}" ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
 	local div="${#chars}" pass="" i
-	for ((i=0; i<16; i++)); do
+	for ((i=0; i<count; i++)); do
 		pass+="${chars:$((RANDOM%div)):1}"
 	done
 	echo "$pass"
@@ -1931,6 +2069,27 @@ function sf_fakeuuid
 		$((RANDOM%16)) \
 		$((RANDOM%16)) \
 		$((RANDOM%16))
+}
+
+# encode and decode base64 with web replacements
+function sf_web64
+{
+	local s
+	(( $# )) && s="$1" || s="$(cat)"
+	s="$(base64 <<<"$s")"
+	s="${s//\//_}"
+	s="${s//+/-}"
+	echo "$s"
+}
+function sf_web64decode
+{
+	local s pad i
+	(( $# )) && s="$1" || s="$(cat)"
+	pad=$(( (4 - ${#1} % 4) % 4 ))
+	for (( i=0; i<pad; i++ )); do s+='='; done
+	s="${s//_/\/}"
+	s="${s//-/+}"
+	base64 -d <<<"$s"
 }
 
 # check if something is mounted here
@@ -2047,6 +2206,25 @@ function sf_wc
 	wc "$@" | while read -r line; do echo "$line"; done
 }
 
+# get the passwd line of a user
+function sf_passwdline
+{
+	if (( $# != 1 )); then
+		sf_usage "$FUNCNAME [user]"
+		return 1
+	fi
+	
+	local user=$1 ent
+	if
+		{ ent=$(getent passwd "$1" 2>/dev/null) && [[ -n "${ent:-}" ]]; } ||
+		{ ent=$(grep ^"$user": <"/etc/passwd" 2>/dev/null) && [[ -n "${ent:-}" ]]; }
+	then
+		echo "$ent"
+		return 0
+	fi
+	return 1
+}
+
 # get the home directory of a user
 function sf_home
 {
@@ -2055,16 +2233,11 @@ function sf_home
 		return 1
 	fi
 
-	if ! [[ -f /etc/passwd ]] || ! [[ -r /etc/passwd ]]; then
-		return 1
-	fi
-
 	local user=${1:-$(sf_user)}
-
-	local home=$(grep ^"$user": <"/etc/passwd" | cut -d: -f 6)
+	local home=$(sf_passwdline "$user" | cut -d: -f 6)
 
 	if [[ -z "$home" ]] && (( $# == 0 )) && [[ -n "${HOME:-}" ]]; then
-		sf_stdout "$HOME"
+		echo "$HOME"
 		return 0
 	fi
 
@@ -2073,7 +2246,7 @@ function sf_home
 		return 1
 	fi
 	
-	sf_stdout "$home"
+	echo "$home"
 	return 0
 }
 
@@ -2263,6 +2436,16 @@ function sf_question
 		;;
 	esac
 )}
+
+# run your default editor
+function sf_edit
+{
+	if sf_type "sensible-editor"; then
+		sensible-editor "$@"
+	else
+		"${EDITOR:-vim}" "$@"
+	fi
+}
 
 # check if commands are available
 function sf_type
@@ -2621,6 +2804,31 @@ function sf_mkfile { sf_mknod "$@" "file"; }
 function sf_mkfifo { sf_mknod "$@" "fifo"; }
 function sf_mkdir { sf_mknod "$@" "dir"; }
 
+# grep in a given field only
+function sf_fgrep
+{
+	if (( $# < 2 )); then
+		sf_usage "$FUNCNAME <field> <grep params>"
+		return 1
+	fi
+
+	local field=$1
+	sf_integer -vq -- "$field" || return $?
+	shift
+	
+	local line x ret=1
+	while read -r line; do
+		IFS=${FGREP_IFS:-$IFS} read -ra x <<<"$line"
+		{ x=${x[field]}; } 2>/dev/null || continue
+		[[ -n "$field" ]] || continue
+		grep "$@" <<<"$x" >/dev/null || continue
+		echo "$line"
+		ret=0
+	done
+
+	return $ret
+}
+
 # rudimentary json parser for simple structures only
 # returns 0 if the field was found, empty or not
 # returns 1 if the field was not found
@@ -2644,6 +2852,11 @@ function sf_json
 	shift $((OPTIND-1))
 	if [[ "${1:-}" = "--" ]]; then shift; fi
 	
+	if (( $# != 2 )); then
+		sf_usage "$FUNCNAME <blob> <field>"
+		return 1
+	fi
+
 	local blob=$1 field=$2
 	local regex="\"$field\"\s*:\s*(.+)"
 	[[ "$blob" =~ $regex ]] || return 1

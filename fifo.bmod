@@ -29,11 +29,11 @@ fi
 
 function fifo_tick
 {
-	local target text
+	local line
 	while read -t0 -u "$fifo_fd"; do
-		read -t1 -r -u "$fifo_fd" target text || break
-		[[ -n "$target" ]] && [[ -n "$text" ]] || continue
-		sf_stdout "$MOD: $target $text"
-		say "$target" "$text"
+		read -t1 -r -u "$fifo_fd" line || break
+		[[ -n "$line" ]] || continue
+		sf_stdout "$MOD: $line"
+		tx "$line"
 	done
 }

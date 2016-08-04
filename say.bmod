@@ -21,7 +21,9 @@ function say_do
 	local say_func=$1
 	shift
 	if [[ "$1" = "#"* ]]; then
-		$say_func "$target" "$2"
+		text=$2
+		text=$(filtertext "$text")
+		$say_func "$target" "$text"
 	elif admin_verbosehas $(src_host); then
 		local channel text
 		read -r channel text <<<"$2" || :
@@ -31,6 +33,7 @@ function say_do
 			reply "I don't think I am currently in $channel"
 		else
 			reply "OK. Saying \"${text}\" in ${channel}"
+			text=$(filtertext "$text")
 			$say_func "$channel" "$text"
 		fi
 	fi

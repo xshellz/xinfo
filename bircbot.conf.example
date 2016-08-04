@@ -70,6 +70,9 @@ FACTOIDS_EASYLEARN=true	# enables teaching the bot things by saying "a is b", i.
 # ARITHMETIC
 ARITHMETIC_PRIORITY=5	# fallback priority
 
+# HTTPTITLE LIMITING
+HTTPTITLE_DELAY=10		# how many seconds required between each url lookup per user
+
 # PROXY FOR HTTP REQUESTS MADE BY CURL
 #CURL_PROXY="localhost:1080"	# <host[:port]>
 

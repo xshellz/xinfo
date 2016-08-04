@@ -68,8 +68,11 @@ function factoids_learn
 		return
 	fi
 
-	local key="${text%%${separator}*}" value="${text#*${separator}}"
+	local key="${text%%${separator}*}"
+	local value="${text#*${separator}}"
 	local creator="$(src_nick)" orig
+
+	value=$(filtertext "$value")
 
 	if factoids_islocked "$key"; then
 		return
@@ -321,7 +324,7 @@ function factoids_search
 		if (( c >= lim )); then
 			results+=", ... (and more)"
 		fi
-		reply "Found this for you: $results"
+		reply "I found $results"
 	else
 		reply "No results :("
 	fi
@@ -416,6 +419,9 @@ function factoids_process
 								reply "Reloaded."
 							fi
 						;;
+						replace)
+							factoids_replace_reply "$(src_nick)" "dummy" "<reply>In factoids: %%n = requester's nick (%n), %%N = my nick (%N), %%o = owner (%o), %%t = timestamp (%t), %%a = addresschar (%a), %%u = unixtime (%u). To see a factoid without replacements, use \"factoids raw <factoid>\"."
+						;;
 						*) factoids_help ;;
 					esac
 				else
@@ -437,9 +443,6 @@ function factoids_process
 							then
 								factoids_error
 							fi
-						;;
-						replace)
-							factoids_replace_reply "$(src_nick)" "dummy" "<reply>In factoids: %%n = requester's nick (%n), %%N = my nick (%N), %%o = owner (%o), %%t = timestamp (%t), %%a = addresschar (%a), %%u = unixtime (%u). To see a factoid without replacements, use \"factoids raw <factoid>\"."
 						;;
 						by)
 							factoids_search "creator" 0 "${data_larray[2]}"
