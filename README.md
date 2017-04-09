@@ -15,4 +15,4 @@ PHP script is written by StephenS
 
 Mods are added with extension .bmod
 
-Complete url: http://dhampir.no/stuff/bash/bircbot/
+Complete url: https://dhampir.no/stuff/bash/bircbot-latest.tgz
