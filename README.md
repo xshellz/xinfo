@@ -3,10 +3,17 @@ Official xShellz IRC Bot (xinfo) written in bash which interacts with PHP.
 
 Extremely lightweight irc bot.
 
+Dependencies:
+```bash
+recode & cathedral shellfunc lib.
+```
+
 Instructions for installation:
 ```bash
 git clone https://github.com/xshellz/xinfo
-cd xinfo && chmod +x ./bircbot && ./bircbot
+cd xinfo && cp bircbot.conf.example bircbot.conf
+(edit bircbot.conf)
+chmod +x ./bircbot && ./bircbot
 ```
 You just simply type <b>./bircbot</b> and bot will start.  
 
