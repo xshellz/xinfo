@@ -14,10 +14,42 @@
 
 # Copyright 2012 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
 
-channel_seenfile="$CONFIG/seen.dat"
-channel_maxfile="$CONFIG/max.dat"
-channel_saveseen=true # set to false when batch adding
-channel_ljt=${channel_ljt:-0} # last join time
+channel_seen_db="$CONFIG/seen.db"
+channel_max_db="$CONFIG/max.db"
+
+# using the database
+function seen_db
+{
+	local func=$1
+	shift
+	"db_${func}" -f "$channel_seen_db" "$@"
+}
+function max_db
+{
+	local func=$1
+	shift
+	"db_${func}" -f "$channel_max_db" "$@"
+}
+
+# migration to bashdb
+if [[ -e "$CONFIG/max.dat" ]]; then
+	(
+		while IFS=" " read -r c m; do
+			max_db set -k "$c" -v "$m"
+		done <"$CONFIG/max.dat"
+		mv "$CONFIG/max.dat" "$CONFIG/max.dat.old"
+	)
+fi
+if [[ -e "$CONFIG/seen.dat" ]]; then
+	(
+		while IFS=" " read -r n N c t; do
+			seen_db set -k "$n" -c "Nick" -v "$N"
+			seen_db set -k "$n" -c "Channel" -v "$c"
+			seen_db set -k "$n" -c "Time" -v "$t"
+		done <"$CONFIG/seen.dat"
+		mv "$CONFIG/seen.dat" "$CONFIG/seen.dat.old"
+	)
+fi
 
 if [[ -z "${CHANNELS[*]:-}" ]]; then
 	sf_warning "$MOD: No channel specified!"
@@ -28,25 +60,7 @@ isset current_channels || declare -a current_channels=()
 unset_on_reset current_channels
 isset channel_names || declare -A channel_names=()
 unset_on_reset channel_names
-isset channel_seen || declare -A channel_seen=()
-unset_on_reset channel_seen
 
-function channel_join_configured
-{
-	if ((channel_ljt+5 > $(sf_unixtime))); then
-		sf_stdoutv "$MOD: Not joining channels. We just did that."
-		return
-	fi
-	local c d
-	for c in "${CHANNELS[@]:-}"; do
-		for d in "${current_channels[@]:-}"; do
-			[[ "$c" != "$d" ]] || continue 2
-		done
-		sf_stdoutv "$MOD: Attempting to join $c"
-		channel_ljt=$(sf_unixtime)
-		tx "JOIN $c"
-	done
-}
 function channel_greetname
 {
 	local channel=$1 name=$2 string=$2 file line
@@ -58,16 +72,16 @@ function channel_greetname
 			if ${CHANNEL_SUBSTRING:-false}; then
 				while
 					[[ -n "$string" ]] &&
-					[[ -z "${channel_seen["${string,,}"]:-}" ]] &&
+					! seen_db has_key -k "${string,,}" &&
 					string=$(cutright "$string")
 				do :; done
 			else
-				if [[ -z "${channel_seen["${string,,}"]:-}" ]]; then
+				if ! seen_db has_key -k "${string,,}"; then
 					string=""
 				fi
 			fi
 			if (( ${#string} == 0 )); then
-				while read line; do
+				while read -r line; do
 					say "$channel" "$(eval echo "\"$line\"")"
 				done <"$file"
 			fi
@@ -93,11 +107,11 @@ function channel_removename
 	IFS=" " read -ra list <<<"${channel_names["$channel"]}"
 	for i in "${!list[@]}"; do
 		if [[ "${list[$i]}" = "$name" ]]; then
-			unset "list[$i]"
+			unset 'list[$i]'
 			break
 		fi
 	done
-	channel_names["$channel"]=${list[@]}
+	channel_names["$channel"]="${list[*]}"
 	channel_seen "$channel" "$name"
 }
 function channel_changename
@@ -112,7 +126,7 @@ function channel_changename
 					break
 				fi
 			done
-			channel_names["$i"]=${list[@]}
+			channel_names["$i"]=${list[*]}
 			sf_stdoutv "$MOD: $src renamed to $target in $i"
 			channel_seen "$i" "$src"
 			channel_seen "$i" "$target"
@@ -132,13 +146,13 @@ function channel_quit
 function channel_headcount
 {
 	local channel=$1
-	local list=${channel_names["$channel"]:-}
+	local heads=${channel_names["$channel"]:-}
 	local count=0
-	while [[ "$list" = *" "* ]]; do
+	while [[ "$heads" = *" "* ]]; do
 		((++count))
-		list=${list#* }
+		heads=${heads#* }
 	done
-	if [[ -n "$list" ]]; then
+	if [[ -n "$heads" ]]; then
 		((++count))
 	fi
 	sf_stdout $count
@@ -147,17 +161,17 @@ function channel_wejoined
 {
 	local channel=$1
 	sf_stdoutv "$MOD: We joined $channel"
-	unset "channel_names["$channel"]"
+	unset 'channel_names[$channel]'
 	current_channels+=( "$channel" )
 }
 function channel_weleft
 {
 	local channel=$1 i
 	sf_stdoutv "$MOD: We left $channel"
-	unset "channel_names["$channel"]"
+	unset 'channel_names[$channel]'
 	for i in "${!current_channels[@]}"; do
 		if [[ "${current_channels[i]}" = "$channel" ]]; then
-			unset "current_channels[i]"
+			unset 'current_channels[i]'
 			sf_stdoutv "$MOD: Channel $i removed"
 			break
 		fi
@@ -165,20 +179,16 @@ function channel_weleft
 }
 function channel_seen
 {
-	local channel=$1 name=$2 n N c t # name, Name, channel, time
+	local channel=$1 name=$2
 	sf_stdoutv "$MOD: We saw $name in $channel"
-	if [[ -z "${channel_seen[*]:-}" ]] && sf_goodfile "$channel_seenfile"; then
-		sf_stdoutv "$MOD: Reading $channel_seenfile"
-		while IFS=" " read -r n N c t; do
-			channel_seen["$n"]="$N $c $t"
-		done <"$channel_seenfile"
-	fi
-	channel_seen["${name,,}"]="$name $channel $(sf_unixtime)"
-	channel_saveseen
+	seen_db set -k "$name" -c "Nick" -v "$name"
+	seen_db set -k "$name" -c "Channel" -v "$channel"
+	seen_db set -k "$name" -c "Time" -v "$(sf_unixtime)"
 }
 function channel_unsee
 {
-	local user=$(src_host) nick="$1" channel nick
+	local nick="$1" user channel nick
+	user=$(src_host)
 	if
 		[[ -z "$nick" ]]
 	then
@@ -186,27 +196,12 @@ function channel_unsee
 	elif
 		admin_verbosehas  "$user"
 	then
-		if [[ -z "${channel_seen["${nick,,}"]:-}" ]]; then
-			reply "I have never seen $nick :("
-		else
-			unset "channel_seen["${nick,,}"]"
+		if seen_db delete -k "$nick" 2>/dev/null; then
 			reply "I have unseen $nick"
-			channel_saveseen
+		else
+			reply "I have never seen $nick :("
 		fi
 	fi
-}
-function channel_saveseen
-{
-	$channel_saveseen && ! ${GHOST:-false} || return 0
-	local t n
-	sf_stdoutv "$MOD: Writing $channel_seenfile"
-	sf_mkfile -qo t
-	for n in "${!channel_seen[@]}"; do
-		echo "$n ${channel_seen["$n"]}" >>"$t"
-	done
-	cat "$t" >"$channel_seenfile"
-	rm "$t"
-	sf_rm_abort "$t"
 }
 function channel_headcountquery
 {
@@ -218,15 +213,7 @@ function channel_headcountquery
 }
 function channel_namecount
 {
-	if ! sf_goodfile "$channel_seenfile"; then
-		reply "I've never seen any names..?!"
-		return
-	fi
-	local c=0 line
-	while IFS="\r" read -r line; do
-		(( ++c ))
-	done <"$channel_seenfile"
-	reply "I've seen $c unique names"
+	reply "I've seen $(seen_db keys -h | sf_wc -l) unique names"
 }
 function channel_seenquery
 {
@@ -246,9 +233,12 @@ function channel_seenquery
 			done
 		done
 		if ! $seenow; then
-			if [[ -n "${channel_seen["$n"]:-}" ]]; then
-				IFS=" " read -r N c t <<<"${channel_seen["$n"]}" # Name, channel, time
-				reply "I saw $N in $c $(sf_seconds2dayslong $(($(sf_unixtime) - $t))) ago"
+			local time channel
+			nick=$(seen_db get -k "$nc" -c "nick") || :
+			time=$(seen_db get -k "$nc" -c "time") || :
+			channel=$(seen_db get -k "$nc" -c "channel") || :
+			if [[ -n "$time" ]]; then
+				reply "I saw $nick in $channel $(sf_seconds2dayslong $(($(sf_unixtime) - time))) ago"
 				unset N c t
 			else
 				reply "I have never seen ${nc} :("
@@ -259,35 +249,23 @@ function channel_seenquery
 function channel_trackmax
 {
 	${CHANNEL_PUBMAX:-false} && ! ${GHOST:-false} || return 0
-	local channel=$1 current=$2
-	isset channel_max || declare -A channel_max=()
-	channel_max["$target"]=0
-	if sf_goodfile "$channel_maxfile"; then
-		while IFS=" " read -r c m; do
-			channel_max[$c]="$m"
-		done <"$channel_maxfile"
-	fi
-	if (( current > channel_max[$channel] )); then
+	local channel=$1 current=$2 max
+	max=$(max_db get -k "$channel" -d "0")
+	if (( current > max )); then
 		say "$channel" "New peak headcount: $current"
-		channel_max["$channel"]="$current"
-		>"$channel_maxfile"
-		for c in "${!channel_max[@]}"; do
-			echo "$c ${channel_max["$c"]}" >>"$channel_maxfile"
-		done
+		max_db set -k "$channel" -v "$current"
 	fi
 }
 function channel_printmax
 {
-	local channel=$1
+	local channel=$1 max
 	if [[ "$target" != "#"* ]]; then
 		reply "That command can only be used in a channel"
-	elif sf_goodfile "$channel_maxfile"; then
-		while IFS=" " read -r c m; do
-			if [[ "$c" = "$channel" ]]; then
-				reply "I have seen a peak of $m people in ${channel}"
-				break
-			fi
-		done <"$channel_maxfile"
+		return 0
+	fi
+	max=$(max_db get -k "$channel" -d "0")
+	if (( max != 0 )); then
+		reply "I have seen a peak of $max people in ${channel}"
 	else
 		reply "I have no record of people in ${channel}"
 	fi
@@ -315,6 +293,7 @@ case "$cmd" in
 	KICK)
 		if [[ "${data%% *}" = "$nick" ]]; then
 			channel_weleft "$target"
+			sf_timer -r "channel_join" 0
 		else
 			sf_stdoutv "$MOD: $(src_nick) kicked ${data%% *} from $target"
 			channel_removename "$target" "${data%% *}"
@@ -328,29 +307,53 @@ case "$cmd" in
 		sf_stdoutv "$MOD: $(src_nick) is now known as ${target#:}"
 		channel_changename "$(src_nick)" "${target#:}"
 	;;
+	$ERR_INVITEONLYCHAN)
+		if sf_timer "knock_${data%% *}" 600; then
+			tx "KNOCK ${data%% *}"
+		fi
+	;;
 	$RPL_NAMREPLY)
 		if $srv; then
 			s=${data#* }
 			s=${s%% :*}
 			sf_stdoutv "$MOD: Names for $s"
 			IFS=" " read -ra a <<<"${data#* :}"
-			channel_saveseen=false
 			for n in "${a[@]}"; do
 				channel_addname "$s" "$n"
 			done
-			channel_saveseen=true
 			unset a s n
 		fi
 	;;
 	$RPL_ENDOFNAMES)
 		if $srv; then
 			sf_stdoutv "$MOD: End of names list"
-			channel_saveseen
 		fi
 	;;
 esac
 
-channel_join_configured
+function channel_tick
+{
+	sf_timer "channel_join" 15 || return 0
+
+	if ${CHANNEL_HIDE:-false} && ! $hidden; then
+		if (( connect_time )) && (( connect_time + 180 < $(sf_unixtime) )); then
+			sf_error "$MOD: Timed out waiting for host to be hidden! Something is FUBAR!"
+			exit 1
+		fi
+		sf_stdout "$MOD: Waiting for host to be hidden before joining channels..."
+		return 0
+	fi
+
+	local c d
+	for c in "${CHANNELS[@]:-}"; do
+		for d in "${current_channels[@]:-}"; do
+			[[ "$c" != "$d" ]] || continue 2
+		done
+		sf_stdoutv "$MOD: Attempting to join $c"
+		tx "JOIN $c"
+	done
+}
+channel_tick
 
 if ! ${GHOST:-false} && [[ -n "$reply" ]]; then
 	case "${data_larray[0]}" in

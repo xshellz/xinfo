@@ -32,38 +32,9 @@ fi
 # needed for runfunc to find the functions
 _shellfunc_header="sf_"
 
-# Put us in a subshell if we aren't
-# Use the following call early in a function to do this:
-#	sf_subshell "$@" || return $_sf_subshell_return
-#	set -e # this wont affect the outside world
-#	set -u # this wont affect the outside world
-#
-# This is a dirty hack, which calls the parent function in a subshell,
-# unless the parent function was called by this one.
-#
-# Fun, but rather useless, as putting the subshell in the calling
-# function would do the same thing.
-#
-function sf_subshell
-{
-	_sf_subshell_return=${_sf_subshell_return:-0}
-	if ! sf_integer -- "$_sf_subshell_return"; then
-		sf_error "\$_sf_subshell_return is ${_sf_subshell_return}!"
-		sf_error "This is FUBAR!"
-		return 1
-	fi
-	if (( $# != 0 )); then
-		sf_usage "$FUNCNAME"
-		return 1
-	fi
-	if [[ "${FUNCNAME[2]:-}" != "${FUNCNAME[0]}" ]]; then
-		(${FUNCNAME[1]} "$@") &&
-		_sf_subshell_return=$? ||
-		_sf_subshell_return=$?
-		return 1
-	fi
-	return 0
-}
+# safe printing
+function sf_print { builtin printf '%s' "$*"; }
+function sf_println { builtin printf '%s\n' "$*"; }
 
 # print to stdout
 function sf_stdout { { echo -e "$@"; } 2>/dev/null; }
@@ -71,50 +42,19 @@ function sf_stdoutv { ! ${_sf_verbose:-true} || sf_stdout "$@"; }
 function sf_stdouti { ! sf_terminal || sf_stdout "$@"; }
 
 # print usage
-function sf_usage { sf_stderr "Usage: $@"; }
-
-# get the maximum possible error code of the system (-1)
-function sf_maxerror { ( exit -1 ) && sf_stdout "$?" || sf_stdout "$?"; }
+function sf_usage { sf_stderr "Usage: $*"; }
 
 # output information, warnings and errors to stderr
-function sf_stderr
-{(
-	local options="-e"
-	local type=""
-	local OPTIND=1 OPTARG OPTERR opt
-	while getopts ":eEnt:" opt; do
-		case "$opt" in
-			e|E) ;;		# these options are ignored
-			n)			# these options are passed on
-				options="${options}$opt"
-			;;
-			t)
-				type=$OPTARG
-			;;
-			[?])
-				sf_error_unknown_option
-				return 1
-			;;
-			:)
-				sf_error_missing_argument
-				return 1
-			;;
-		esac
-	done
-	shift $((OPTIND-1))
-	if [[ "${1:-}" = "--" ]]; then shift; fi
-
-	sf_stdout ${options} "${type:+"${type}: "}$@" >&2
-)}
+function sf_stderr { echo -e "$@" >&2; }
 function sf_stderrv { ! ${_sf_verbose:-true} || sf_stderr "$@"; }
 function sf_stderri { ! sf_terminal || sf_stderr "$@"; }
-function sf_info { sf_stderr -t "Info" "$@"; }
+function sf_info { printf "Info: " >&2 && sf_stderr "$@"; }
 function sf_infov { ! ${_sf_verbose:-true} || sf_info "$@"; }
 function sf_infoi { ! sf_terminal || sf_info "$@"; }
-function sf_warning { sf_stderr -t "Warning" "$@"; }
+function sf_warning { printf "Warning: " >&2 && sf_stderr "$@"; }
 function sf_warningv { ! ${_sf_verbose:-true} || sf_warning "$@"; }
 function sf_warningi { ! sf_terminal || sf_warning "$@"; }
-function sf_error { sf_stderr -t "Error" "$@"; }
+function sf_error { printf "Error: " >&2 && sf_stderr "$@"; }
 function sf_errorv { ! ${_sf_verbose:-true} || sf_error "$@"; }
 function sf_errori { ! sf_terminal || sf_error "$@"; }
 
@@ -217,7 +157,8 @@ function sf_fcopy
 function sf_unixtime { date "$@" +'%s'; }
 
 # get a standard cathedral timestamp
-function sf_timestamp { date "$@" +'%Y-%m-%d %H:%M:%S (%z)'; }
+function sf_timestamp { date "$@" +'%Y-%m-%d %H:%M:%S %z'; }
+function sf_timestampZ { date "$@" +'%Y-%m-%d %H:%M:%S %Z'; }
 function sf_timestamp_short { date "$@" +'%Y-%m-%d %H:%M:%S'; }
 
 # get a military style date
@@ -229,9 +170,33 @@ function sf_timestamp_backup { date "$@" +"%Y%m%dT%H%M%S"; }
 # check if we're online
 function sf_online
 {(
+	local ipopt='--prefer-family=IPv4'
+
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":46" opt; do
+		case "$opt" in
+			4) ipopt="--inet4-only" ;;
+			6) ipopt="--inet6-only" ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
 	function check
 	{
-		sf_timeout 30 wget --spider --timeout=28 --tries=1 "$@" >/dev/null 2>&1
+		if sf_timeout 30 wget $ipopt --spider --timeout=28 --tries=1 "$@" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 1
+		return 1
 	}
 
 	if
@@ -389,13 +354,13 @@ function sf_permload
 				done
 			do
 				! $skip || [[ -e "$file" ]] || continue
-				sf_stdout "${user}(${uid}) - ${group}(${gid}) - ${perms} - ${file}${target:+ => $target}"
+				echo "${user}(${uid}) - ${group}(${gid}) - ${perms} - ${file}${target:+ => $target}"
 				if ! $dryrun; then
 					if [[ -n "$target" ]]; then
 						rm -rf "$file" 2>/dev/null || :
 						ln -sf "$target" "$file"
 					else
-						$numeric && chown ${uid}:${gid} "$file" || chown ${user}:${group} "$file"
+						$numeric && chown "${uid}:${gid}" "$file" || chown "${user}:${group}" "$file"
 						chmod "$perms" "$file"
 					fi
 				fi
@@ -415,7 +380,7 @@ function sf_dmtime
 	local mtime unixtime
 	mtime=$(sf_mtime "$1") || return 1
 	unixtime=$(sf_unixtime)
-	sf_stdout $((unixtime-mtime))
+	echo $((unixtime-mtime))
 }
 
 # trim whitespace
@@ -450,15 +415,15 @@ function sf_countdown
 	fi
 
 	if [[ -n "$string" ]]; then
-		sf_stdout -n "$string "
+		echo -n "$string "
 	fi
 
 	local i
 	for(( i=$1; i>0; i-- )); do
-		sf_stdout -n "${i}.. "
+		echo -n "${i}.. "
 		sleep 1 || return $?
 	done
-	sf_stdout "0!"
+	echo "0!"
 }
 
 # is X in the path?
@@ -533,6 +498,37 @@ function sf_diffreplace
 	fi
 }
 
+# recursively kill processes
+function sf_killtree
+{
+	local pids ppid=$1 sig=${2:-"TERM"}
+	if ! kill -0 "$ppid"; then
+		builtin echo "killtree: ($ppid) - No such process" >&2
+		return 1
+	fi
+	(( ppid == $$ )) || kill -STOP "$ppid" 2>/dev/null || :
+	pids=( $({ pgrep -P "$ppid" || ps -o pid= --ppid "$ppid" || :; } 2>/dev/null ) )
+	if [[ -n "${pids[@]:-}" ]]; then
+		for pid in "${pids[@]}"; do
+			sf_killtree "$pid" "$sig" 2>/dev/null || :
+		done
+	fi
+	kill "-${sig}" "$ppid" 2>/dev/null || :
+	(( ppid == $$ )) || kill -CONT "$ppid" 2>/dev/null || :
+	wait "$ppid" 2>/dev/null || :
+}
+
+# kill all child processes of script
+function sf_killchildren
+{
+	local _term
+	_term=$(builtin trap -p TERM)
+	builtin trap : TERM
+	sf_killtree $$ TERM;
+	builtin trap - TERM
+	builtin eval "$_term"
+}
+
 # check if a variable is in an array - usage: sf_inarray "$needle" "${haystack[@]:-}"
 function sf_inarray
 {
@@ -599,8 +595,8 @@ function sf_dec2bin
 {
 	local dec=$1 bin=""
 	local base2=(0 1)
-	while (($dec)); do
-		bin="${base2[$(($dec % 2))]}$bin"
+	while ((dec)); do
+		bin="${base2[$((dec % 2))]}$bin"
 		dec=$((dec/2))
 	done
 	[[ -n "$bin" ]] || bin="0"
@@ -621,7 +617,7 @@ function sf_ipv42bin
 	local bin="" iparray dec
 	IFS='.' read -r -a iparray <<<"$@"
 	if ((${#iparray[@]} != 4)); then
-		sf_error "Not an IPv4 address: $@"
+		sf_error "Not an IPv4 address: $*"
 		return 1
 	fi
 	for dec in "${iparray[@]}"; do
@@ -638,10 +634,59 @@ function sf_stampline
 	done
 }
 
+# look for changes between a tar archive and a directory
+function sf_tardiff
+{
+	local z=""
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":z" opt; do
+		case "$opt" in
+			z) z="z" ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	if (( $# != 2 )); then
+		sf_usage "$FUNCNAME <tgz> <dir>"
+		return 1
+	fi
+
+	file=$1
+	dir=$2
+
+	if ! sf_goodfile -vq "$file" || ! sf_gooddir -vq "$dir"; then
+		return 1
+	fi
+
+	if ! tar "${z}df" "$file" -C "$dir" . >/dev/null 2>&1; then
+		return 1
+	fi
+
+	local delta
+	delta=$(
+		{
+			tar "${z}tf" "$file" | grep -v '^\.\/$' | sed 's/\/$//g'
+			cd "$dir" && find . -mindepth 1
+		} | sort | uniq -u | sf_wc -c
+	)
+
+	return $(( delta ? 1 : 0 ))
+}
+
+
 # print given fields from output (awk '{print $whatever}')
 function sf_fields
 {
-	local fields=() param line lower upper skip=0 delimiter=" " input_delimiter="$IFS"
+	local fields=() param i line lower upper skip=0 delimiter=" " input_delimiter="$IFS"
 	local OPTIND=1 OPTARG OPTERR opt
 	while getopts ":s:d:D:" opt; do
 		case "$opt" in
@@ -682,8 +727,8 @@ function sf_fields
 				upper=${param##*-}
 				upper=${upper:-${#fields[@]}}
 				(( upper--)) || :
-				for ((param=$lower; param<=upper; param++)); do
-					[[ -z "${fields[param]:-}" ]] || line+="${fields[param]}${delimiter}"
+				for (( i=lower; i<=upper; i++ )); do
+					[[ -z "${fields[i]:-}" ]] || line+="${fields[i]}${delimiter}"
 				done
 			else
 				sf_error "Invalid field specification: $param"
@@ -727,15 +772,20 @@ function sf_lines_from
 	fi
 	while IFS='' read -r line; do
 		$print || ! [[ "$line" =~ $1 ]] || print=true
-		! $print || (( skip-- > 0 )) || echo "$line"
+		if $print; then
+			if (( skip )); then
+				(( skip-- ))
+			else
+				echo "$line"
+			fi
+		fi
 	done
-	$print && exit 0 || exit 1
 }
 
 # print lines until a given regex occurs
 function sf_lines_to
 {
-	local line print=true skip=0
+	local line skip=0
 	local OPTIND=1 OPTARG OPTERR opt
 	while getopts ":s:" opt; do
 		case "$opt" in
@@ -762,26 +812,34 @@ function sf_lines_to
 		return 1
 	fi
 	while IFS='' read -r line; do
-		! $print || (( skip-- > 0 )) || echo "$line"
-		! $print || ! [[ "$line" =~ $1 ]] || print=false
+		if (( skip )); then
+			(( skip-- ))
+		elif [[ "$line" =~ $1 ]]; then
+			cat >/dev/null
+			break
+		fi
+		echo "$line"
 	done
-	! $print && exit 0 || exit 1
 }
 
-# check if given ipv4 is a private address
+# check if given ipv4 is a private address, or print a list of private addresses
 function sf_ipv4priv
 {
-	if (( $# != 1 )); then
-		sf_usage "$FUNCNAME <command>"
-		return 1
-	fi
-	local bin
-	bin=$(sf_ipv42bin "$1") || return $?
-	local ip cmp locnet=(
+	local locnet=(
+		"127.0.0.0/8"
 		"10.0.0.0/8"
 		"172.16.0.0/12"
 		"192.168.0.0/16"
 	)
+	if ! (( $# )); then
+		printf '%s\n' "${locnet[@]}"
+		return 0
+	elif (( $# > 1 )); then
+		sf_usage "$FUNCNAME <command>"
+		return 1
+	fi
+	local bin ip cmp
+	bin=$(sf_ipv42bin "$1") || return $?
 	for ip in "${locnet[@]}"; do
 		cmp=$(sf_ipv42bin "${ip%%/*}")
 		cmp=${cmp:0:${ip##*/}}
@@ -821,7 +879,7 @@ function sf_which
 	local result=""
 	case "$(sf_sysver)" in
 		*Debian*|*Ubuntu*|*BackTrack*|*Kali*|*Raspbian*|*Arch*|*CentOS*)
-			if (( ${BASH_VERSINFO[0]} >= 4 )); then
+			if (( BASH_VERSINFO[0] >= 4 )); then
 				result=$(command -p -v "$1" 2>/dev/null) || :
 			else
 				result=$(/usr/bin/env -i bash -l <<< "which ${1}" 2>/dev/null) || :
@@ -844,6 +902,12 @@ function sf_which
 		return 1
 	fi
 )}
+
+# get the system uptime in seconds
+function sf_uptime
+{
+	sf_fields -d '.' 1 </proc/uptime
+}
 
 # restart a service
 function sf_restartservice
@@ -883,15 +947,23 @@ function sf_octperm
 
 	case "$(sf_sysver)" in
 		*Debian*|*Ubuntu*|*BackTrack*|*Kali*|*Raspbian*|*Arch*)
-			stat -c "%a" "$1"
+			printf '%03d\n' "$(stat -c "%a" "$1")"
 		;;
 		FreeBSD*)
-			stat -f "%OLp" "$1"
+			printf '%03d\n' "$(stat -f "%OLp" "$1")"
 		;;
 		*)
 			sf_error "No idea how to get octal permissions on $(sf_sysver)!"
 		;;
 	esac
+}
+
+# buffer
+function sf_buffer
+{
+	local buffer
+	buffer=$(base64 -w 0)
+	base64 -d <<<"$buffer"
 }
 
 # netstat
@@ -957,33 +1029,43 @@ function sf_nicejob
 }
 
 # validate ipv4 addresses
-function sf_ipv4 {
-	[[ "$@" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
-}
-
-# escape a variable conservatively, for passing to another script (BAD)
-function sf_escape {
-	sed -e 's/\([^[:alnum:]]\)/\\\1/g'
-}
+function sf_ipv4 { [[ "$@" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 
 # resolve a hostname
-function sf_lookup {(
-	local line
+function sf_lookup
+{
+	local six=false
+	if [[ "${1:-}" = "-6" ]]; then
+		six=true; shift
+	fi
 	if (( $# != 1 )); then
-		sf_usage "$FUNCNAME <hostname>"
+		sf_usage "$FUNCNAME [-6] <hostname>"
 		return 1
 	fi
+	local query=$1
+	declare -a v4
+	declare -a v6
+	local line
 	while read -r line; do
-		case "$line" in
-			*" has address "*)
-				sf_stdout "${line##* }"
-			;;
-			*" has IPv6 address "*)
-				sf_stdout "${line##* }"
-			;;
-		esac
-	done < <(host "$1")
-)}
+		if [[ "$line" = *"."* ]]; then
+			v4+=( "$line" )
+		else
+			v6+=( "$line" )
+		fi
+	done < <(
+		getent hosts "$query" 2>/dev/null | cut -d ' ' -f1
+		while read -r line; do
+			if [[ "$line" = *" has address "* ]]; then
+				echo "${line##* }"
+			elif [[ "$line" = *" has IPv6 address "* ]]; then
+				echo "${line##* }"
+			fi
+		done < <(host "$query")
+	)
+	! $six || [[ -z "${v6[@]:-}" ]] || printf '%s\n' "${v6[@]}" | sort | uniq 2>/dev/null
+	[[ -z "${v4[@]:-}" ]] || printf '%s\n' "${v4[@]}" | sort -t . -k 1,1n -k 2,2n -k 3,3n -k 4,4n | uniq 2>/dev/null
+	$six || [[ -z "${v6[@]:-}" ]] || printf '%s\n' "${v6[@]}" | sort | uniq 2>/dev/null
+}
 
 # it's nice to be nice
 function sf_nice { renice -n 19 $$ &>/dev/null || :; }
@@ -1164,9 +1246,9 @@ function sf_terminate
 			[[ -n "${1:-}" ]] &&
 			sf_integer -vq -- "$1" &&
 			(( $1 != 0 )) &&
-			{ kill -0 $1; } 2>/dev/null
+			{ kill -0 "$1"; } 2>/dev/null
 		then
-			{ kill -TERM $1; wait $1; } 2>/dev/null || :
+			{ kill -TERM "$1"; wait "$1"; } 2>/dev/null || :
 		fi
 		shift
 	done
@@ -1250,7 +1332,7 @@ function sf_pidfile
 				fi
 
 				# return existing pid
-				$quiet || sf_stdout "$pid"
+				$quiet || echo "$pid"
 				return 1
 			fi
 		fi
@@ -1269,8 +1351,59 @@ function sf_pidfile
 	fi
 }
 
-# sleep in one second intervals (wildly inaccurate, but reacts faster to kills)
+# write something on the screen while clearing the rest of it
+function sf_clearwrite
+{
+    local home ed el rows cols
+    home=$(tput cup 0 0)
+    ed=$(tput ed)
+    el=$(tput el)
+    lines=$(tput lines)
+    cols=$(tput cols)
+
+    printf '%s' "$home"
+
+    local count=0
+    local line sub
+    while (( count < lines )); do
+        IFS= read -r line || break
+        while true; do
+            sub="${line:0:cols}"
+            printf '%s' "$sub"
+            (( ++count ))
+            if (( ${#sub} != cols )); then
+                if (( count == lines )); then
+                    printf '%s' "$el"
+                else
+                    printf '%s\n' "$el"
+                fi
+            fi
+            (( count != lines )) || break
+            line=${line:cols}
+            (( ${#line} )) || break
+        done
+    done
+    (( count == lines )) || printf '%s' "$ed"
+}
+
+# sleep using built-in functions only
+function sf_fastsleep { sf_sleep "$@"; }
 function sf_sleep
+{
+# ORIG:
+#	coproc sleep { exec >&-; read -t "$1"; }; exec {sleep[0]}<&-; wait $sleep_PID
+# V1:
+#	local fd
+#	exec {fd}<> >(:)
+#	read -r ${1:+-t "$1"} -u $fd || :
+#	exec {fd}>&-
+# V2:
+	[[ -n "${_sf_sleep_fd:-}" ]] || exec {_sf_sleep_fd}<> >(:)
+	read -r ${1:+-t "$1"} -u $_sf_sleep_fd || :
+}
+
+# sleep in one second intervals (wildly inaccurate, but reacts faster to kills)
+function sf_sleep_1
 {
 	if (( $# != 1 )); then
 		sf_usage "$FUNCNAME <integer>"
@@ -1284,7 +1417,7 @@ function sf_sleep
 
 	local i
 	for(( i=0; i<delay; i++ )); do
-		sleep 1 || return $?
+		sf_sleep 1 || return $?
 	done
 }
 
@@ -1301,7 +1434,8 @@ function sf_sleepmore
 		return 1
 	fi
 
-	local sleeptime=$(( ${_sf_sleepmoreseconds:=$SECONDS}-$SECONDS ))
+	local sleeptime
+	sleeptime=$(( ${_sf_sleepmoreseconds:=$SECONDS} - SECONDS ))
 	if (( sleeptime <= 0 )); then
 		_sf_sleepmoreseconds=$SECONDS
 	else
@@ -1356,11 +1490,12 @@ function sf_hostname
 # simple URL encoding - just encode everything
 function sf_urlencode
 {
-	local text="$@"
+	local text="$*"
 	if ! (( $# )); then
 		text=$(cat)
 	fi
-	local encoded=$(xxd -plain <<<"$text" | tr -d '\n' | sed 's/\(..\)/%\1/g')
+	local encoded
+	encoded=$(xxd -plain <<<"$text" | tr -d '\n' | sed 's/\(..\)/%\1/g')
 	echo "${encoded%\%0a}"
 }
 
@@ -1399,7 +1534,7 @@ function sf_query
 	local key=${1,,}
 
 	while IFS='=' read -r -d '&' ikey value; do
-	    [[ "${ikey,,}" = "$key" ]] || continue
+		[[ "${ikey,,}" = "$key" ]] || continue
 		$empty || [[ -n "$value" ]] || return 1
 		! $base64 || value=$(sf_web64decode <<<"$value")
 		! $lower || value=${value,,}
@@ -1431,6 +1566,63 @@ function sf_terminal
 	fi
 
 	return 0
+}
+
+# track timers
+function sf_timer
+{
+	local check=false
+	local reset=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":cr" opt; do
+		case "$opt" in
+			c) check=true ;;
+			r) reset=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+
+	if (( $# != 2 )); then
+		sf_usage "$FUNCNAME <name> <seconds>"
+		return 1
+	fi
+
+	local name=$1
+	local seconds=$2
+
+	if [[ -z "$name" ]]; then
+		sf_error "$FUNCNAME: Invalid timer name"
+		return 1
+	fi
+
+	if ! sf_integer -vq -- "$seconds"; then
+		return 1
+	fi
+
+	if ! declare -p _sf_timers >/dev/null 2>&1; then
+		declare -gA _sf_timers
+	fi
+
+	local t now
+	t="${_sf_timers["$name"]:-}"
+	now=$(sf_unixtime)
+
+	if (( t <= now )) || $reset; then
+		$check || _sf_timers["$name"]=$((now+seconds))
+		return 0
+	else
+		return 1
+	fi
 }
 
 # check if a short option is set
@@ -1515,7 +1707,8 @@ function sf_hosthasuser
 		return 1
 	fi
 
-	local line=$(sf_passwdline "$1") || :
+	local line
+	line=$(sf_passwdline "$1") || :
 
 	if [[ -z "$line" ]]; then
 		return 1
@@ -1532,7 +1725,7 @@ function sf_ppid
 	if (( $# > 1 )) || ! sf_integer -vq "${1:-$$}"; then
 		return 1
 	fi
-	echo $(ps -p ${1:-$$} -o ppid=)
+	ps -p "${1:-$$}" -o ppid=
 }
 
 # test a file's integrity
@@ -1556,11 +1749,12 @@ function sf_verifydata
 
 	local file total_size=0
 	for file in "$@"; do
-		sf_stdout "Testing $file ..."
+		echo "Testing $file ..."
 		if ! sf_goodfile -v "$file" >/dev/null; then
 			return 1
 		fi
-		local size=$(sf_size "$file")
+		local size
+		size=$(sf_size "$file")
 		(( total_size += size ))
 		if (( size == 0 )); then
 			sf_error "$1 has a size of 0!"
@@ -1568,7 +1762,7 @@ function sf_verifydata
 		fi
 	done
 	if (($# > 1)); then
-		sf_stdout "Testing joined file integrity"
+		echo "Testing joined file integrity"
 	fi
 	if ! cat "$@" | $cmd &>/dev/null; then
 		sf_error "Error while verifying file contents"
@@ -1576,9 +1770,9 @@ function sf_verifydata
 		return 1
 	fi
 	if (($# == 1)); then
-		sf_stdout "$1 is OK - $total_size bytes"
+		echo "$1 is OK - $total_size bytes"
 	else
-		sf_stdout "Files are OK - $total_size bytes"
+		echo "Files are OK - $total_size bytes"
 	fi
 }
 
@@ -1588,7 +1782,11 @@ function sf_tgztest { sf_verifydata "tgz" "$@"; }
 # split files in gigabyte size chunks
 function sf_gigsplit
 {
-	split -d -a 4 -b 1073741824 - "${@}_"
+	local dir name
+	dir=$(dirname "$*")
+	name="$(basename "$*")_"
+	find "$dir" -mindepth 1 -maxdepth 1 -type f -name "${name}*" -delete
+	split -d -a 4 -b 1073741824 - "${dir}/${name}"
 }
 
 # using the "timeout" utility safely
@@ -1613,7 +1811,7 @@ function sf_timeout
 		set +e
 		exec {fd}>&2
 		{
-			timeout -s9 $duration "$@" 2>&${fd}
+			timeout -s9 "$duration" "$@" 2>&${fd}
 		} 2>/dev/null
 		res=$?
 		exec {fd}>&-
@@ -1635,7 +1833,8 @@ function sf_hosthasgroup
 		return 1
 	fi
 
-	local line=$(grep "^${1}:" "$file")
+	local line
+	line=$(grep "^${1}:" "$file")
 
 	if [[ -z "$line" ]]; then
 		return 1
@@ -1655,13 +1854,13 @@ function sf_goodfile
 	_sf_verbose=false
 	local executable=false
 	local writable=false
-	local silent=false
+	local quiet=false
 	local fifo=false
 	local OPTIND=1 OPTARG OPTERR opt
-	while getopts ":fsvwx" opt; do
+	while getopts ":fqsvwx" opt; do
 		case "$opt" in
 			f) fifo=true ;;
-			s) silent=true ;;
+			q|s) quiet=true ;;
 			v) _sf_verbose=true ;;
 			w) writable=true ;;
 			x) executable=true ;;
@@ -1686,7 +1885,7 @@ function sf_goodfile
 	local file="$1"
 	if [[ -h "$file" ]]; then
 		file=$(readlink -f -n "$file")
-		sf_infov "\"$1\" is a symlink pointing to \"$file\""
+		sf_stdoutv "\"$1\" is a symlink pointing to \"$file\""
 	fi
 
 	if ! [[ -e "$file" ]]; then
@@ -1721,7 +1920,7 @@ function sf_goodfile
 		return 1
 	fi
 
-	$silent || sf_stdoutv "File \"$file\" is good."
+	$quiet || sf_stdoutv "File \"$file\" is good."
 	return 0
 )}
 
@@ -1749,10 +1948,14 @@ function sf_gooddir
 
 	_sf_verbose=false
 	local writable=false
+	local quiet=false
+	local checkls=false
 	local executable=true # default true for directories, no way to override this for now
 	local OPTIND=1 OPTARG OPTERR opt
-	while getopts ":vwx" opt; do
+	while getopts ":qslvwx" opt; do
 		case "$opt" in
+			q|s) quiet=true ;;
+			l) checkls=true ;;
 			v) _sf_verbose=true ;;
 			w) writable=true ;;
 			x) executable=true ;;
@@ -1776,7 +1979,7 @@ function sf_gooddir
 	
 	local dir="$1"
 	if [[ -h "$dir" ]]; then
-		dir=$(readlink -n "$dir")
+		dir=$(readlink -f -n "$dir")
 		sf_infov "\"$1\" is a symlink pointing to \"$dir\""
 	fi
 
@@ -1805,7 +2008,12 @@ function sf_gooddir
 		return 1
 	fi
 
-	sf_stdoutv "Directory \"$dir\" is good."
+	if $checkls && ! sf_timeout 30 ls "$dir" >/dev/null 2>&1; then
+		sf_infov "Directory \"$dir\" could not be listed!"
+		return 1
+	fi
+
+	$quiet || sf_stdoutv "Directory \"$dir\" is good."
 	return 0
 
 )}
@@ -1864,13 +2072,13 @@ function sf_user
 		return 1
 	fi
 
-	sf_stdout "${USER:-$(whoami)}"
+	echo "${USER:-$(whoami)}"
 }
 
 # try to sanitize http lines
 function sf_web2sane
 {
-	local line filter=false printable=false
+	local line filter=false printable=false utf8line
 	local OPTIND=1 OPTARG OPTERR opt
 	while getopts ":fp" opt; do
 		case "$opt" in
@@ -1892,7 +2100,7 @@ function sf_web2sane
 	while IFS='' read -r line; do
 		if
 			! recode utf8..h <<<"$line" >/dev/null 2>&1 &&
-			local utf8line=$(recode "iso8859-15..utf8" <<<"$line") &&
+			utf8line=$(recode "iso8859-15..utf8" <<<"$line") &&
 			[[ -n "$utf8line" ]]
 		then
 			line=$utf8line
@@ -1902,7 +2110,7 @@ function sf_web2sane
 			line=$(recode -f "utf8..iso8859-15" <<<"$line" | recode "iso8859-15..utf8")
 		fi
 		if $printable; then
-			line=$(sed -e 's/[^[:print:]]//g' <<<"$line")
+			line=$(sf_printable <<<"$line")
 		fi
 		echo "$line"
 	done
@@ -1912,10 +2120,12 @@ function sf_web2sane
 function sf_oneline
 {
 	local escape=false
+	local separator=" "
 	OPTIND=1
-	while getopts ":e" opt; do
+	while getopts ":es:" opt; do
 		case "$opt" in
 			e) escape=true ;;
+			s) separator=$OPTARG ;;
 			[?])
 				echo "Unknown option -${OPTARG}" >&2
 				return 1
@@ -1932,9 +2142,9 @@ function sf_oneline
 	local first=true line
 	while read -r line; do
 		[[ -n "$line" ]] || continue
-		$first && first=false || echo -n " "
+		$first && first=false || echo -n "$separator"
 		if $escape; then
-			echo -n "$line" | sf_escape
+			echo -n "$line" | sed -e 's/\([^[:alnum:]]\)/\\\1/g'
 		else
 			echo -n "$line"
 		fi
@@ -2000,18 +2210,20 @@ function sf_force1
 # generate a random password
 function sf_randpass
 {
-	local alnum='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-	local special='!"#%&,.-;:_()=?@€£${[]}'
+	local alpha='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+	local alnum="${alpha}0123456789"
+	local special='!"#%&,.-;:_()=?@€$£{[]}'
 	local chars=$alnum
 	local count=8
 	local OPTIND=1 OPTARG OPTERR opt
-	while getopts ":c:s" opt; do
+	while getopts ":ac:s" opt; do
 		case "$opt" in
 			c)
 				sf_integer -v -- "$OPTARG" >/dev/null || return 1
 				count=$OPTARG
 			;;
 			s) chars="${alnum}${special}" ;;
+			a) chars=$alpha ;;
 			[?])
 				sf_error_unknown_option
 				return 1
@@ -2085,22 +2297,91 @@ function sf_web64decode
 {
 	local s pad i
 	(( $# )) && s="$1" || s="$(cat)"
-	pad=$(( (4 - ${#1} % 4) % 4 ))
+	pad=$(( (4 - ${#s} % 4) % 4 ))
 	for (( i=0; i<pad; i++ )); do s+='='; done
 	s="${s//_/\/}"
 	s="${s//-/+}"
 	base64 -d <<<"$s"
 }
 
-# check if something is mounted here
-function sf_ismounted
+# find mounts at or below the given path
+function sf_mounts
 {
-	if (( $# != 1 )); then
-		sf_usage "$FUNCNAME </path>"
+	local reverse=""
+	local fstab=""
+	local exact=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":frx" opt; do
+		case "$opt" in
+			f) fstab="--fstab" ;;
+			r) reverse="-r" ;;
+			x) exact=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	if (( $# > 1 )); then
+		sf_usage "$FUNCNAME [/path]"
 		return 1
 	fi
 
-	case "$1" in
+	local root=${1:-}
+	local slash
+	slash=$(sf_slashpath "$root")
+	
+	if [[ "$slash" != "/"* ]]; then
+		sf_error "Path must start with a slash"
+		return 1
+	fi
+
+	{
+		local line
+		while read -r line; do
+			if [[ "$line" = "$root" ]] || { ! $exact && [[ "$line" = "$slash"* ]]; }; then
+				echo "$line"
+			fi
+		done < <(findmnt --raw --output=target --noheadings $fstab)
+	} | sort $reverse | grep .
+}
+
+# check if something is mounted here
+function sf_ismounted
+{
+	local check=false check_bind=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":c" opt; do
+		case "$opt" in
+			c) check=true ;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
+			;;
+		esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	if (( $# != 1 )); then
+		sf_usage "$FUNCNAME [-c] </path>"
+		return 1
+	fi
+
+	local path=$1
+
+	case "$path" in
 		/*) ;;
 		*)
 			sf_error "Path must start with a slash"
@@ -2108,13 +2389,30 @@ function sf_ismounted
 		;;
 	esac
 
-	local line
-	while read -r line; do
-		if grep -q "%[[:blank:]][[:blank:]]*${1}$"<<<"$line"; then
-			return 0
+	while [[ "$path" = "/"*"/" ]]; do
+		path=${path%"/"}
+	done
+
+	grep -q "^${path}$" < <(sf_mounts) || return $?
+
+	if $check; then
+		sf_gooddir -xl "$path" &&
+		grep -q "^${path}$" < <(sf_mounts) ||
+		return $?
+
+		# special case for bind mounts, verify contents in source dir vs target dir
+		local opt
+		opt=$(findmnt --raw --noheadings --fstab --target="$path" --output=options)
+		if [[ ",${opt}," = *",bind,"* ]]; then
+			local src
+			src=$(findmnt --raw --noheadings --fstab --target="$path" --output=source)
+			if sf_isemptydir "$src"; then
+				sf_isemptydir "$path" || return 1
+			else
+				! sf_isemptydir "$path" || return 1
+			fi
 		fi
-	done < <(df -P "$1" 2>/dev/null | tail -n +2)
-	return 1
+	fi
 }
 
 # fix printing of empty headers when grepping on a tail of multiple files
@@ -2144,14 +2442,16 @@ function sf_tailgrepfix
 function sf_sysver
 {
 	if (( $# )); then
-		local sysver="$(sf_sysver)"
+		local sysver
+		sysver="$(sf_sysver)"
 		while (( $# )); do
 			! [[ " ${sysver,,} " = *" ${1,,} "* ]] || return 0
 			shift
 		done
 		return 1
 	fi
-	local os=$(uname -s)
+	local os
+	os=$(uname -s)
 	case "$os" in
 		Linux)
 			local issue=""
@@ -2168,14 +2468,28 @@ function sf_sysver
 					issue="CentOS"
 				fi
 			fi
-			sf_stdout "${os}${issue:+" ${issue%% \\*}"}"
+			echo "${os}${issue:+" ${issue%% \\*}"}"
 		;;
 		FreeBSD)
-			local version=$(uname -r)
-			sf_stdout "${os} ${version}"
+			local version
+			version=$(uname -r)
+			echo "${os} ${version}"
 		;;
 		*)
-			sf_stdout "${os}"
+			echo "${os}"
+		;;
+	esac
+}
+
+# attempt to read a boolean string
+function sf_str2bool
+{
+	case "${@,,}" in
+		1|true|yes|on|enable|enabled)
+			return 0
+		;;
+		*)
+			return 1
 		;;
 	esac
 }
@@ -2203,7 +2517,7 @@ function sf_toupper
 # wc guaranteed to not have spaces around it
 function sf_wc
 {
-	wc "$@" | while read -r line; do echo "$line"; done
+	wc "$@" | sf_trim
 }
 
 # get the passwd line of a user
@@ -2234,7 +2548,8 @@ function sf_home
 	fi
 
 	local user=${1:-$(sf_user)}
-	local home=$(sf_passwdline "$user" | cut -d: -f 6)
+	local home
+	home=$(sf_passwdline "$user" | cut -d: -f 6)
 
 	if [[ -z "$home" ]] && (( $# == 0 )) && [[ -n "${HOME:-}" ]]; then
 		echo "$HOME"
@@ -2248,23 +2563,6 @@ function sf_home
 	
 	echo "$home"
 	return 0
-}
-
-# get home, user and host, all in one go (mostly for tmpenv)
-function sf_getvars
-{
-	local host user home
-	host=$(sf_hostname_lower) || return 1
-	user=$(sf_user) || return 1
-	home=$(sf_home) || return 1
-	sf_gooddir -w "$home" && local homewrite=true || local homewrite=false
-	if [[ -n "$home" ]] && [[ -n "$user" ]] && [[ -n "$host" ]]; then
-		echo "_shellvar_host=${host}"
-		echo "_shellvar_user=${user}"
-		echo "_shellvar_home=${home}"
-		echo "_shellvar_homewrite=${homewrite}"
-	fi
-	return 1
 }
 
 # get temp dir
@@ -2285,7 +2583,7 @@ function sf_tmpdir
 		return 1
 	fi
 
-	sf_stdout "${TMP:-"/tmp"}"
+	echo "${TMP:-"/tmp"}"
 )}
 
 # check if a package is installed (expand to support more systems)
@@ -2489,7 +2787,7 @@ function sf_decimal { sf_number    -t "a valid decimal" "${@:-"-C $FUNCNAME"}"; 
 
 # check if a variable is a valid number
 function sf_number
-{(
+{
 	local comma=false
 	local dot=false
 	local allownegative=false
@@ -2497,7 +2795,7 @@ function sf_number
 	local error=""
 	local vartype="a number"
 	local quiet=false
-	_sf_verbose=false
+	local _sf_verbose=false
 	local OPTIND=1 OPTARG OPTERR opt
 	while getopts ":cC:de:int:vq" opt; do
 		case "$opt" in
@@ -2557,7 +2855,7 @@ function sf_number
 	done <<<"${1}"
 	$quiet || sf_stdoutv "\"${1}\" is ${vartype}"
 	return 0
-)}
+}
 
 # append a slash to a path if none is there
 function sf_slashpath
@@ -2571,7 +2869,7 @@ function sf_slashpath
 	[[ "$path" = *"/" ]] || path="${path}/"
 #	case "$path" in */) ;; *) path="${path}/" ;; esac
 
-	sf_stdout "${path}"
+	echo "${path}"
 }
 
 # append a dash to a string if none is there
@@ -2586,7 +2884,7 @@ function sf_dashstring
 	[[ $string = *"-" ]] || string="${string}-"
 #	case "$string" in *-) ;; *) string="${string}-" ;; esac
 
-	sf_stdout "${string}"
+	echo "${string}"
 }
 
 # determine if a user is in a given group
@@ -2612,42 +2910,507 @@ function sf_ingroup
 # carriage return, line feed
 function sf_crlf
 {
-	echo -n "$@"$'\r'$'\n'
+	if (( $# )); then
+		sf_crlf <<<"$@"
+		return $?
+	fi
+	perl -e '
+		$| = 1;
+		while ((my $c = getc) ne undef)
+		{
+			if ("$c" eq "\r") { next; }
+			if ("$c" eq "\n") { print "\r\n"; next; }
+			print "$c";
+		}
+	'
 }
 
-# filter a line coming from telnet input (with tcpserver, for instance)
-function sf_tnfilter
+# filter out any non-printable characters
+function sf_printable
 {
-	if ! (( $# )); then
-		local line
-		while read -r line; do
-			sf_tnfilter "$line"
-		done
-		return
+	if (( $# )); then
+		printf '%s' "$*" | sf_printable
+	else
+		sed -e 's/[^[:print:]]//g'
 	fi
-	local out="" hex=$(xxd -p <<<"$*") byte skip=0 first=true
-	while IFS= read -r -n 2 byte; do
-		if (( skip )); then
-			(( skip-- ))
-			continue
+}
+
+# set up basic functions for telnet handling (use with tcpserver or similar)
+function sf_tn_init
+{
+	_sf_tn_mode=${1:-"default"}
+
+	exec {_sf_tn_raw_fd}>&1
+	exec > >( { sf_crlf; } 2>/dev/null )
+	function echo { { builtin echo "$@"; } 2>/dev/null; }
+	function println { { builtin printf "$*\r\n" >&${_sf_tn_raw_fd}; } 2>/dev/null; }
+	function tn_raw { { builtin printf "$*" >&${_sf_tn_raw_fd}; } 2>/dev/null; }
+	function read { { builtin read "$@"; } 2>/dev/null; }
+	function printf { { builtin printf "$@"; } 2>/dev/null; }
+	function cat { { command cat "$@"; } 2>/dev/null; }
+	function pv { { command pv "$@"; } 2>/dev/null; }
+	function xxd { { command xxd "$@"; } 2>/dev/null; }
+	function tn_autostar {
+		local _text="$*"
+		if $__password; then
+			_text=$(printf '%s' "$_text" | sed -e 's/./*/g')
 		fi
-		case "$byte" in
-			ff)
-				if $first; then
-					skip=2
+		tn_raw "$_text"
+	}
+	trap : PIPE
+
+	case "$_sf_tn_mode" in
+		echo)
+			tn_raw $'\xff\xfb\x01' # will echo
+			tn_raw $'\xff\xfb\x03' # will suppress go-ahead
+			tn_raw $'\xff\xfd\x18' # do termtype
+			_sf_tn_echo=true
+			_sf_tn_raw=false
+		;;
+		raw)
+			_sf_tn_echo=false
+			_sf_tn_raw=true
+		;;
+		*)
+			_sf_tn_echo=false
+			_sf_tn_raw=false
+		;;
+	esac
+
+	# hacks
+	_sf_tn_first_read=true
+	_sf_tn_skip_newline=false
+
+	# sub negotiation
+	_sf_tn_subnegotiate=""
+	_sf_tn_sub_data=""
+	_sf_tn_client_linux=true
+}
+
+# attempt to make line breaks sane
+function sf_sanelines
+{
+	local c r=false
+	while LC_ALL=C IFS='' read -r -n 1 c; do
+		case "$c" in
+			$'\r') r=true; printf '\n' ;;
+			$'\n')
+				if $r; then
+					r=false
 				else
-					out+="$byte"
+					printf '\n'
 				fi
 			;;
-			0a|0d) ;; # newline, carriage return
-			*)
-				out+="$byte"
-				first=false
+			*) printf '%s' "$c";;
+		esac
+	done
+}
+
+# flush input buffer (probably of \n characters following the \r that triggered an external command)
+function sf_tn_flush_input
+{
+	local c
+	while read -r -t 0; do
+		LC_ALL=C IFS='' read -r -n 1 -t 1 c 2>/dev/null || :
+	done
+}
+
+# read a single character from telnet
+# NOTE: read with lower case '-n', because 0xff can not be read with -N on bash 4.2
+function _sf_tn_read_char
+{
+	_sf_tn_read_result=128 # timeout
+	local __timeout=$((_sf_tn_read_timeout - SECONDS))
+	if ((__timeout >= 0 )); then
+		LC_ALL=C IFS='' \
+		read -r -n 1 \
+		-t "$__timeout" \
+		"$1" 2>/dev/null &&
+		_sf_tn_read_result=$? || _sf_tn_read_result=$?
+		(( _sf_tn_read_result )) || [[ -n "${!1}" ]] || printf -v "$1" '\n'
+		if ! (( _sf_tn_read_result )) && ${_sf_tn_debug:-false}; then
+			local what
+			case "${!1}" in
+				$'\xff') what="ESC" ;;
+				$'\xf4') what="INT" ;;
+				$'\xfb') what="WILL" ;;
+				$'\xfc') what="WONT" ;;
+				$'\xfd') what="DO" ;;
+				$'\xfe') what="DONT" ;;
+				$'\xfa') what="SUB BEG, SB" ;;
+				$'\xf0') what="SUB END, SE" ;;
+				$'\x01') what="ECHO" ;;
+				$'\x02') what="RECONNECT" ;;
+				$'\x03') what="SUPPRESS GO-AHEAD" ;;
+				$'\x04') what="MESSAGE SIZE" ;;
+				$'\x05') what="OPT STATUS" ;;
+				$'\x06') what="TIMING" ;;
+				$'\x07') what="RC PRINTER" ;;
+				$'\x08') what="LINE WIDTH" ;;
+				$'\x09') what="PAGE LENGTH" ;;
+				$'\x0a') what="CARRIAGE RETURN USE" ;;
+				$'\x0b') what="HORIZ TAB" ;;
+				$'\x0c') what="HORIZ TAB USE" ;;
+				$'\x0d') what="FORM FEEDS" ;;
+				$'\x0e') what="VERT TAB" ;;
+				$'\x0f') what="VERT TAB USE" ;;
+				$'\x10') what="LINE FEED USE" ;;
+				$'\x11') what="EXTENDED ASCII" ;;
+				$'\x12') what="FORCED LOGOUT" ;;
+				$'\x13') what="BYTE MACRO" ;;
+				$'\x14') what="DATA TERM" ;;
+				$'\x15') what="SIGDUP" ;;
+				$'\x16') what="SIGDUP OUTPUT" ;;
+				$'\x17') what="SEND LOCATE" ;;
+				$'\x18') what="TERM TYPE" ;;
+				$'\x19') what="END RECORD" ;;
+				$'\x1a') what="TACACS ID" ;;
+				$'\x1b') what="OUTPUT MARK" ;;
+				$'\x1c') what="TERM LOC#" ;;
+				$'\x1d') what="3270 REGIME" ;;
+				$'\x1e') what="X.3 PAD" ;;
+				$'\x1f') what="WINDOW SIZE" ;;
+				$'\x20') what="TERMINAL SPEED" ;;
+				$'\x21') what="REMOTE FLOW" ;;
+				$'\x22') what="LINEMODE" ;;
+				*) what='?' ;;
+			esac
+			printf 'telnet << %s (%s)\n' "$(printf '%s' "${!1}" | xxd -p)" "$what" >&2
+		fi
+	fi
+	return $_sf_tn_read_result
+}
+
+# assign variables
+function _sf_tn_assign
+{
+	local __i __input
+	read -r __input || :
+	for ((__i=0; __i<$#;)); do
+		if (( ++__i == $# )); then
+			read -r "${!__i}" <<<"$__input"
+		else
+			read -r "${!__i}" __input <<<"$__input"
+		fi
+	done
+}
+
+# read a line from telnet
+function sf_tn_read
+{
+	if [[ -z "${_sf_tn_raw_fd:-}" ]]; then
+		sf_error "ShellFunc telnet must be initialized before using $FUNCNAME!"
+		return 1
+	fi
+
+	local __password=false
+	local __timeout=60
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":pt:P:" opt; do
+		case "$opt" in
+			P) printf '%s' "$OPTARG" ;;
+			p) __password=true ;;
+			t)
+				__timeout=$OPTARG
+				sf_integer -vq -- "$__timeout" || return 1
+			;;
+			[?])
+				sf_error_unknown_option
+				return 1
+			;;
+			:)
+				sf_error_missing_argument
+				return 1
 			;;
 		esac
-	done <<<"$hex"
-	read -r out <<<"$(xxd -p -r <<<"$out")"
-	echo -n "$out"
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	if [[ -z "${1:-}" ]]; then
+		sf_error "Missing variable name!"
+		return 1
+	fi
+	_sf_tn_assign "$@" </dev/null
+
+	local _sf_tn_read_timeout=$((SECONDS + __timeout))
+	local __pos=0
+	local __cmd=""
+	local __c
+	while _sf_tn_read_char __c; do
+		if $_sf_tn_first_read; then
+			_sf_tn_first_read=false
+			if [[ "$_sf_tn_mode" = "echo" ]] && [[ "$__c" != $'\xff' ]]; then
+				# this client is not negotiating with us
+				_sf_tn_mode="raw"
+				_sf_tn_raw=true
+				_sf_tn_echo=false
+			fi
+		fi
+		if $_sf_tn_skip_newline; then
+			_sf_tn_skip_newline=false
+			[[ "$__c" != $'\n' ]] || continue
+		fi
+		if [[ -n $_sf_tn_subnegotiate ]] && [[ "$__c" != $'\xff' ]]; then
+			_sf_tn_sub_data+="$__c"
+			continue
+		fi
+		if $_sf_tn_raw; then
+			case "$__c" in
+				$'\r'|$'\n')
+					[[ "$__c" != $'\r' ]] || _sf_tn_skip_newline=true
+					_sf_tn_assign "$@" < <(sf_printable "$__cmd")
+					return 0
+				;;
+				*) __cmd+="$__c";;
+			esac
+		else
+			case "$__c" in
+				$'\xff')
+					local __action __code __response=""
+					_sf_tn_read_char __action
+					case "$__action" in
+						$'\xfb') # 251, will
+							_sf_tn_read_char __code
+							if ! $_sf_tn_echo; then
+								__response=$'\xff\xfe'"${__code}" # 254, dont
+							else
+								case "$__code" in
+									$'\x18') # terminal type
+										# IAC SB TERMINAL-TYPE SEND IAC SE
+										__response=$'\xff\xfa\x18\x01\xff\xf0'
+									;;
+									*)
+										__response=$'\xff\xfe'"${__code}" # 254, dont
+									;;
+								esac
+							fi
+						;;
+						$'\xfd') # 253, do
+							_sf_tn_read_char __code
+							if ! $_sf_tn_echo || { [[ "$__code" != $'\x01' ]] && [[ "$__code" != $'\x03' ]]; }; then # allow echo and sga
+								__response=$'\xff\xfc'"${__code}" # 252, wont
+							fi
+						;;
+						$'\xfc') # 252, wont
+							_sf_tn_read_char __code
+						;;
+						$'\xfe') # 254, dont
+							_sf_tn_read_char __code
+						;;
+						$'\xf4') # 244, interrupt
+							return 69
+						;;
+						$'\xfa') # 250, begin subnegotiation
+							_sf_tn_read_char _sf_tn_subnegotiate # set sub type
+							continue
+						;;
+						$'\xf0') # 240, end subnegotiation
+							case "$_sf_tn_subnegotiate" in
+								$'\x18') # terminal type
+									case "${_sf_tn_sub_data,,}" in
+										"ansi")
+											_sf_tn_client_linux=false
+										;;
+									esac
+								;;
+							esac
+							if ${_sf_tn_debug:-false}; then
+								printf 'SUB DATA: %s (%s)\n' "$(printf '%s' "$_sf_tn_sub_data" | xxd -p)" "$_sf_tn_sub_data" >&2
+							fi
+							_sf_tn_subnegotiate=""
+							_sf_tn_sub_data=""
+							continue
+						;;
+						$'\xff') # 255, we actually meant to send 255
+							:
+						;;
+						*)
+							echo "Unknown action: $(printf '%s' "$__action" | xxd -p)" >&2
+							exit 1
+						;;
+					esac
+					[[ -z "$__response" ]] || tn_raw "$__response"
+				;;
+				$'\r'|$'\n')
+					[[ "$__c" != $'\r' ]] || _sf_tn_skip_newline=true
+					if $_sf_tn_echo; then
+						println
+					fi
+					if $__password; then
+						_sf_tn_assign "$@" < <(printf '%s' "$__cmd" | sha256sum | sf_fields 1)
+					else
+						_sf_tn_assign "$@" <<<"$__cmd"
+					fi
+					return 0
+				;;
+				$'\x03') # 3, windows interrupt
+					return 69
+				;;
+				$'\x1b') # 27, arrows
+					_sf_tn_read_char __action
+					_sf_tn_read_char __code
+					if [[ "$__action" = $'\x5b' ]] && $_sf_tn_echo; then
+						case "$__code" in
+							$'\x31'|$'\x37') # home
+								_sf_tn_read_char __code
+								for ((; __pos>0; __pos--)); do
+									tn_raw $'\x1b\x5b\x44' # left
+								done
+							;;
+							$'\x32') # insert
+								_sf_tn_read_char __code
+							;;
+							$'\x33') # delete
+								_sf_tn_read_char __code
+
+								# position must be less than the length of the current command
+								(( __pos < ${#__cmd} )) || continue
+
+								# erase character from command
+								__cmd="${__cmd:0:__pos}${__cmd:__pos+1}"
+
+								# write to end of command, space, then backpedal
+								tn_autostar "${__cmd:__pos}"
+								tn_raw " "
+								for ((__c=${#__cmd} + 1; __c>__pos; __c--)); do
+									tn_raw $'\x1b\x5b\x44' # left
+								done
+							;;
+							$'\x34'|$'\x38') # end
+								_sf_tn_read_char __code
+								for ((; __pos<${#__cmd}; __pos++)); do
+									tn_raw $'\x1b\x5b\x43' # right
+								done
+							;;
+							$'\x35') # page up
+								_sf_tn_read_char __code
+							;;
+							$'\x36') # page down
+								_sf_tn_read_char __code
+							;;
+							$'\x43') # C, right
+								if (( __pos < ${#__cmd} )); then
+									(( ++__pos ))
+									tn_raw "${__c}${__action}${__code}"
+								fi
+							;;
+							$'\x44') # D, left
+								if (( __pos )); then
+									(( __pos-- ))
+									tn_raw "${__c}${__action}${__code}"
+								fi
+							;;
+						esac
+					fi
+				;;
+				$'\x08') # backspace
+					if (( __pos )) && $_sf_tn_echo; then
+
+						# reduce position
+						(( __pos-- ))
+						tn_raw $'\x1b\x5b\x44' # left
+
+						# erase character from command
+						__cmd="${__cmd:0:__pos}${__cmd:__pos+1}"
+
+						# write to end of command, space, then backpedal
+						tn_autostar "${__cmd:__pos}"
+						tn_raw " "
+						for ((__c=${#__cmd} + 1; __c>__pos; __c--)); do
+							tn_raw $'\x1b\x5b\x44' # left
+						done
+					fi
+				;;
+				$'\x7f') # delete
+					if (( ${#__cmd} )) && $_sf_tn_echo; then
+
+						# linux client? if so, act like backspace
+						if $_sf_tn_client_linux; then
+							(( __pos )) || continue
+							(( __pos-- ))
+							tn_raw $'\x1b\x5b\x44' # left
+						fi
+
+						# position must be less than the length of the current command
+						(( __pos < ${#__cmd} )) || continue
+
+						# erase character from command
+						__cmd="${__cmd:0:__pos}${__cmd:__pos+1}"
+
+						# write to end of command, space, then backpedal
+						tn_autostar "${__cmd:__pos}"
+						tn_raw " "
+						for ((__c=${#__cmd} + 1; __c>__pos; __c--)); do
+							tn_raw $'\x1b\x5b\x44' # left
+						done
+					fi
+				;;
+				*)
+					__c=$(sf_printable "$__c")
+					if [[ -n "$__c" ]]; then
+						__cmd="${__cmd:0:__pos}${__c}${__cmd:__pos}" && (( ++__pos ))
+						if $_sf_tn_echo; then
+	
+							# write char
+							tn_autostar "${__c}"
+	
+							# write to end of command, then backpedal
+							tn_autostar "${__cmd:__pos}"
+							for ((__c=${#__cmd}; __c>__pos; __c--)); do
+								tn_raw $'\x1b\x5b\x44' # left
+							done
+						fi
+					fi
+				;;
+			esac
+		fi
+	done
+	return $_sf_tn_read_result
+}
+
+# export functions from a reasonably structured library
+function sf_export
+{
+	if (( $# < 2 )); then
+		sf_usage "$FUNCNAME <lib> <func> [func] ..."
+		return $(( $# ? 1 : 0 ))
+	fi
+
+	local lib=$1
+	shift
+
+	if ! sf_goodfile -qv "$lib"; then
+		return 1
+	fi
+
+	local lines
+	lines=$(sf_wc -l <"$lib")
+
+	local func
+	for func; do
+		local begin=""
+		local src=false
+		if
+			begin=$(grep -n -m1 '^[[:space:]]*'"$func"'[[:space:]]*()' "$lib") ||
+			begin=$(grep -n -m1 '^[[:space:]]*function[[:space:]][[:space:]]*'"$func"'\([[:space:]]\|{\|$\)' "$lib")
+		then
+			begin=${begin%%:*}
+			local i
+			for ((i=1; i<lines; i++)); do
+				if tail -n +"$begin" "$lib" | head -n "$i" | bash >/dev/null 2>&1; then
+					tail -n +"$begin" "$lib" | head -n "$i"
+					echo
+					src=true
+					break
+				fi
+			done
+		fi
+		if ! $src; then
+			sf_error "Unable to extract function: $func"
+			return 1
+		fi
+	done
 }
 
 # check shutdown state - for (almost) endless loops
@@ -2663,15 +3426,15 @@ function sf_true
 
 # create temporary fifo's and files with random names
 # checks for collisions and *should* always succeed
-function sf_mknod
-{
+function sf_mknod {
 	# get options
+	local _path
+	_path="$(sf_tmpdir)"
 	local _sf_verbose=false
 	local _fullpath=""
 	local _legacy=false
 	local _name=""
 	local _output=""
-	local _path="$(sf_tmpdir)"
 	local _rmqueue=false
 	local OPTIND=1 OPTARG OPTERR opt
 	while getopts ":f:ln:o:p:qv" opt; do
@@ -2756,7 +3519,7 @@ function sf_mknod
 		local _node="${_path}${_name}"
 		if $_legacy; then
 			if [[ -z "$_fullpath" ]]; then
-				_node="$(sf_dashstring ${_node})${RANDOM}"
+				_node="$(sf_dashstring "$_node")${RANDOM}"
 			fi
 			sf_infov "Attempting to make ${type}: \"$_node\""
 		fi
@@ -2769,7 +3532,8 @@ function sf_mknod
 			;;
 			file)
 				if ! $_legacy; then
-					local _file=$(umask 0077 && mktemp "${_node}-XXXXXX" 2>/dev/null) &&
+					local _file
+					_file=$(umask 0077 && mktemp "${_node}-XXXXXX" 2>/dev/null) &&
 					_node=${_file} &&
 					sf_infov "Attempting to make ${type}: \"$_node\"" &&
 					break || :
@@ -2794,7 +3558,7 @@ function sf_mknod
 	fi
 
 	if [[ -z "$_output" ]]; then
-		sf_stdout "$_node"
+		echo "$_node"
 	else
 		printf -v "$_output" "%s" "$_node"
 	fi
@@ -2819,8 +3583,8 @@ function sf_fgrep
 	local line x ret=1
 	while read -r line; do
 		IFS=${FGREP_IFS:-$IFS} read -ra x <<<"$line"
-		{ x=${x[field]}; } 2>/dev/null || continue
-		[[ -n "$field" ]] || continue
+		{ x=${x[field]:-}; } 2>/dev/null || continue
+		[[ -n "$x" ]] || continue
 		grep "$@" <<<"$x" >/dev/null || continue
 		echo "$line"
 		ret=0
@@ -2856,40 +3620,53 @@ function sf_json
 		sf_usage "$FUNCNAME <blob> <field>"
 		return 1
 	fi
-
 	local blob=$1 field=$2
-	local regex="\"$field\"\s*:\s*(.+)"
-	[[ "$blob" =~ $regex ]] || return 1
-	local match="${BASH_REMATCH[1]}"
-	if [[ "$match" != '"'* ]]; then
-		regex="([^ ,;}]*)"
-		[[ "$match" =~ $regex ]] || return 1
-		echo "${BASH_REMATCH[1]}"
-		return 0
-	fi
 
-	local esc=false
-	local result=""
-	while IFS= read -r -n 1 c; do
-		case "$c" in
-			"\\") $esc && esc=false || esc=true; continue ;;
-			'"')
-				$esc || break
-				esc=false
-			;;
-			*)
-				if $esc; then
-					result+="\\"
-					esc=false
+	local match
+	match=$(
+		shopt -s nocasematch
+		regex="\"$field\"\s*:\s*(.+)"
+		if [[ "$blob" =~ $regex ]]; then
+			if [[ "${BASH_REMATCH[1]}" = '"'* ]]; then
+				sf_print "${BASH_REMATCH[1]}"
+			else
+				regex="([^ ,;}]*)"
+				if [[ "${BASH_REMATCH[1]}" =~ $regex ]]; then
+					sf_print "${BASH_REMATCH[1]}"
 				fi
-			;;
-		esac
-		result+="$c"
-	done <<<"${BASH_REMATCH[1]:1}"
-	read -r result <<<"$result"
-	[[ -n "$result" ]] || return 0
-	! $lower || result="${result,,}"
-	echo -e "$result"
+			fi
+		fi
+	)
+
+	case "$match" in
+		'') return 1 ;;
+		'"'*)
+			local esc=false
+			local result=""
+			while IFS= read -r -n 1 c; do
+				case "$c" in
+					"\\") $esc && esc=false || esc=true; continue ;;
+					'"')
+						$esc || break
+						esc=false
+					;;
+					*)
+						if $esc; then
+							result+="\\"
+							esc=false
+						fi
+					;;
+				esac
+				result+="$c"
+			done <<<"${match:1}"
+			read -r result <<<"$result"
+			! $lower || result="${result,,}"
+			echo -e "$result"
+		;;
+		*)
+			sf_println "$match"
+		;;
+	esac
 }
 
 # save filename in a list of stuff which is deleted when sf_rm_process runs
@@ -2897,11 +3674,13 @@ function sf_rm_queue
 {
 	local _sf_verbose=false
 	local printname=false
+	local force=false
 	local file
 
 	local OPTIND=1 OPTARG OPTERR opt
-	while getopts ":vV" opt; do
+	while getopts ":vVf" opt; do
 		case "$opt" in
+			f) force=true ;;
 			v) _sf_verbose=true ;;
 			V) printname=true ;;
 			[?])
@@ -2930,7 +3709,7 @@ function sf_rm_queue
 	fi
 
 	while [[ -n "${1:-}" ]]; do
-		if ! [[ -e "$1" ]]; then
+		if ! [[ -e "$1" ]] && ! $force; then
 			sf_warning "File \"${1}\" does not exist!"
 			sf_warning "Not adding to rm_queue!"
 			shift
@@ -2950,7 +3729,7 @@ function sf_rm_queue
 #		sf_rm_array+=( "${1}" ) # bash >=3.1
 		sf_rm_array[${#sf_rm_array[*]}]="$1"
 		sf_infov "\"${1}\" marked for deletion!"
-		if $printname; then sf_stdout "${1}"; fi
+		if $printname; then echo "${1}"; fi
 		shift
 	done
 	
@@ -3051,8 +3830,11 @@ function sf_rm_process
 	(
 		set +e
 		for file in "${sf_rm_array[@]}"; do
-			rm -f "$file" &&
-			sf_infov "Removed \"$file\""
+			if [[ -e "$file" ]]; then
+				rm -f "$file" && sf_infov "Removed \"$file\""
+			else
+				sf_infov "Missing file not removed: \"$file\""
+			fi
 		done
 	)
 
@@ -3131,7 +3913,7 @@ function sf_seconds2dayslong
 	if [[ -z "$out" ]]; then
 		out="0 seconds"
 	fi
-	sf_stdout "$out"
+	echo "$out"
 }
 
 # get the full path of a file
@@ -3146,7 +3928,7 @@ function sf_fullpath
 		sf_error "Directory \"$(dirname "$1")\" does not exist!"
 		return 1
 	fi
-	sf_stdout "$(pwd -L)/$(basename "$1")"
+	echo "$(pwd -L)/$(basename "$1")"
 }
 
 # get the real path of a file
@@ -3157,154 +3939,7 @@ function sf_realpath
 		return 1
 	fi
 
-	cd $(dirname "$1")
-	sf_stdout "$(pwd -P)/$(basename "$1")"
+	cd "$(dirname "$1")"
+	echo "$(pwd -P)/$(basename "$1")"
 }
 
-# get callstacks on error
-function sf_traceonerror
-{
-	set -E # this affects the calling shell
-
-	if (( $# > 1 )); then
-		sf_usage "$FUNCNAME [cleanup_function]"
-		return 1
-	fi
-
-	_sf_cleanupfunc="${1:-}"
-
-	function _sf_trap
-	{
-		code=$?
-		trap : ERR
-		(( code == 0 )) || sf_stacktrace $code || :
-		[ -z "$_sf_cleanupfunc" ] || ${_sf_cleanupfunc}
-		exit $code
-	}
-
-	trap _sf_trap ERR
-}
-
-# display callstack
-function sf_stacktrace
-{
-	sf_errorcounter=${sf_errorcounter:-0}
-	if ! sf_integer -- "$sf_errorcounter"; then
-		sf_error "\$sf_errorcounter is ${sf_errorcounter}!"
-		sf_error "This is FUBAR!"
-		return 1
-	fi
-
-	# store return value
-	local ret=$?
-
-	# sanity
-	if (( $# > 1 )); then
-		sf_usage "$FUNCNAME [exitcode]"
-		return 1
-	fi
-	if [[ -z "${BASH_SOURCE[1]:-}" ]]; then
-		sf_error "It makes no sense to call ${FUNCNAME} directly from a shell..."
-		return 1
-	fi
-
-	# override return value
-	if (( $# != 0 )) && sf_integer -- "${1}"; then
-		ret=${1}
-	fi
-
-	# count the errors
-	(( ++sf_errorcounter ))
-	
-	# 0 is in _sf_error_getstackline, 1 is this line, so start at 2
-	printf "%s" "ERROR #${sf_errorcounter} (status: ${ret}) in function \"$(_sf_error_getstackline 2 func)\"" >&2
-	printf "%s\n" " at $(_sf_error_getstackline 2 file):$(_sf_error_getstackline 2 line)" >&2
-
-	local stacksize=${#FUNCNAME[@]}
-	local width=$(( stacksize - 2 ))	# deduct 2, since we want to start at 0 (see above comment)
-	width=$(( ${#width} + 1 ))			# add 1 width for the hash sign
-	local i=2							# start at 2 again
-
-	local funcwidth=0
-	local j=$i
-	if (( j <= stacksize )); then
-		sf_stderr "Call stack:"
-	else
-		sf_stderr "No call stack"
-	fi
-	for ((; j <= stacksize; j++)); do
-		if (( ${#FUNCNAME[$j-1]} > funcwidth )); then
-			funcwidth=${#FUNCNAME[$j-1]}
-		fi
-	done
-
-	for ((; i <= stacksize; i++)); do
-		printf "\t%${width}s" "#$((i-2))" >&2
-		printf "\t%-${funcwidth}s" $(_sf_error_getstackline $i func) >&2
-		printf "\t%s\n" "at $(_sf_error_getstackline $i file):$(_sf_error_getstackline $i line)" >&2
-	done
-
-	return $ret
-}
-
-# get individual entries from the call stack
-function _sf_error_getstackline
-{
-	local stacksize=${#FUNCNAME[@]}
-	local problem=false
-
-	# if stacksize is 1, we were called directly
-	# if stacksize is 2, another function called us directly
-	# both cases are unacceptable
-	if ! $problem && (( stacksize < 3 )); then
-		sf_error "It makes no sense to call ${FUNCNAME} directly..."
-		problem=true
-	fi
-
-	# we should, in fact, only be called from sf_*
-	if ! $problem; then
-		case "${FUNCNAME[1]}" in
-			sf_*) ;;
-			*)
-				sf_error "${FUNCNAME} should only be called internally"
-				sf_error "Why are you screwing around with __functions anyway?"
-				problem=true
-			;;
-		esac
-	fi
-	
-	# ensure correct number and type of parameters
-	if (( $# != 2 )) || ! sf_integer -- "$1" || (( $1 < 0 )) || (( $1 >= stacksize )); then
-		problem=true
-	fi
-
-	# check if we can actually do something with this request
-	if ! $problem; then
-		case "$2" in
-			file)
-				sf_realpath "${BASH_SOURCE[$1]}"
-			;;
-			line)
-				if (( $1 == 1 )); then
-					sf_stdout "${LINENO}"
-				else
-					local line=$(( $1 - 1 ))
-					sf_stdout "${BASH_LINENO[$line]}"
-				fi
-			;;
-			func)
-				sf_stdout "${FUNCNAME[$1]}"
-			;;
-			*)
-				problem=true
-			;;
-		esac
-	fi
-	
-	# report problems
-	if $problem; then
-		sf_usage "$FUNCNAME <integer> \"file|line|func\""
-		sf_error "<integer> must be zero or positive, and less than the current stacksize (${stacksize})"
-		return 1
-	fi
-}

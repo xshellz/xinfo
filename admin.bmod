@@ -112,7 +112,8 @@ function admin_process
 				reply "Raw what?"
 				return
 			fi
-			local raw="$(dfromi 2)"
+			local raw
+			raw="$(dfromi 2)"
 			reply "$raw"
 			tx "$(echo -e "$raw")"
 		;;
@@ -130,7 +131,7 @@ function admin_process
 		testkill)
 			reply "Killing connection."
 			sleep 1
-			kill -TERM "$ncpid"
+			kill -TERM "$catpid"
 		;;
 		die|shutdown)
 			action_all "dies..."

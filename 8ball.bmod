@@ -18,7 +18,8 @@
 
 function 8ball_do
 {
-	local q="$(dfromi 1)"
+	local q
+	q="$(dfromi 1)"
 	read -r q <<<"${q,,}-$(date +%Y%d%H)" # data "salted" with year, day of month and hour
 	q=$(sha1sum <<<"$q")
 	q=${q//[![:digit:]]/}

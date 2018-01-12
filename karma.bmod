@@ -87,7 +87,8 @@ function karma_process
 		return
 	fi
 
-	local src_nick="$(src_nick)"
+	local src_nick
+	src_nick="$(src_nick)"
 	if [[ "$low" = "${src_nick,,}" ]] && ! admin_has "$(src_host)"; then
 		reply "Don't modify your own karma, you cheater!"
 		return
@@ -111,7 +112,7 @@ function karma_process
 #	if (( value )); then
 		karma["$low"]="$value"
 #	else
-#		unset "karma[$low]"
+#		unset 'karma[$low]'
 #	fi
 
 	reply "${user} now has a karma of $value"

@@ -26,13 +26,21 @@ then
 					sf_stdoutv "$MOD: identifying"
 					tx "PRIVMSG $(src_nick) :IDENTIFY $NICK $PASS"
 				;;
+				"Invalid password for ${NICK}.")
+					sf_error "Nickserv told us our password was invalid :("
+					exit 1
+				;;
 			esac
 		;;
 	esac
 fi
 
 # keep our name
-if [[ "$nick" != "$NICK" ]]; then
+function nickserv_tick
+{
+	[[ "$nick" != "$NICK" ]] || return 0
+	sf_timer "nickserv" 10 || return 0
 	sf_stdoutv "$MOD: Wrong name! Attempting to change!"
 	tx "NICK $NICK"
-fi
+}
+nickserv_tick

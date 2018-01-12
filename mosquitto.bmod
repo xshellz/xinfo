@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2, June 1991.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
+# or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
+
+# Copyright 2016 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+if ${GHOST:-false}; then
+	return 0
+fi
+
+
+# sanity
+if
+	[[ -z "${MQTT_HOST:-}" ]] ||
+	[[ -z "${MQTT_PORT:-}" ]] ||
+	[[ -z "${MQTT_USER:-}" ]] ||
+	[[ -z "${MQTT_PASS:-}" ]] ||
+	[[ -z "${MQTT_CID:-}" ]] ||
+	[[ -z "${MQTT_BASE:-}" ]]
+then
+	return 0
+fi
+
+
+# listener
+if [[ -z "${_mqtt_fd:-}" ]] || ! kill -0 "$_mqtt_pid" 2>/dev/null; then
+	exec {_mqtt_fd}< <( exec \
+		mosquitto_sub \
+			--id "$MQTT_CID" \
+			--host "$MQTT_HOST" \
+			--port "$MQTT_PORT" \
+			--topic "${MQTT_BASE}/out/#" \
+			--username "$MQTT_USER" \
+			--pw "$MQTT_PASS" \
+			${MQTT_CAFILE:+--cafile "$MQTT_CAFILE"} \
+			--disable-clean-session \
+			--keepalive 60 \
+			--verbose \
+			--qos 2 \
+			--quiet \
+			2>&1
+	)
+	_mqtt_pid=$!
+fi
+
+
+# how to publish
+function mqtt_pub
+{
+    local topic=$1
+    shift
+    local msg=${*:-$(cat)}
+    mosquitto_pub \
+		--host "$MQTT_HOST" \
+		--port "$MQTT_PORT" \
+        --topic "$topic" \
+		--username "$MQTT_USER" \
+		--pw "$MQTT_PASS" \
+		${MQTT_CAFILE:+--cafile "$MQTT_CAFILE"} \
+        --qos 2 \
+        --message "$msg"
+}
+
+
+# ship output messages
+function mosquitto_log_output
+{
+	local target=$1
+	shift
+	local text="$*"
+	if [[ "$target" = "#"* ]]; then
+		mqtt_pub "${MQTT_BASE}/tx/channel/${target:1}" "$botnick $text"
+	else
+		mqtt_pub "${MQTT_BASE}/tx/priv/${target}" "$botnick $text"
+	fi
+}
+
+
+# ship input messages
+function mosquitto_log_input
+{
+	case "$cmd" in
+		PRIVMSG|CTCP)
+			if 
+				[[ -n "$data_export" ]] &&
+				{ [[ "$cmd" != "CTCP" ]] || [[ "$data" = "ACTION "* ]]; }
+			then
+				if [[ "$target" = "#"* ]]; then
+					mqtt_pub "${MQTT_BASE}/in/channel/${target:1}" "${src} $(sf_web2sane -p <<<"$data_export")"
+				else
+					mqtt_pub "${MQTT_BASE}/in/priv/$(src_nick)" "${src} $(sf_web2sane -p <<<"$data_export")"
+				fi
+			fi
+		;;
+	esac
+}
+
+
+# read text
+function mosquitto_tick
+{
+	local topic text to
+	while read -r -t0 -u "$_mqtt_fd"; do
+		read -t1 -r -u "$_mqtt_fd" topic text || break
+		[[ -n "$text" ]] || continue
+		sf_stdout "MQTT: $topic $text"
+		case "$topic" in
+			"${MQTT_BASE}/out/channel/"*)
+				to="#${topic##*/}"
+			;;
+			"${MQTT_BASE}/out/priv/"*)
+				to="${topic##*/}"
+			;;
+			*) continue ;;
+		esac
+		say "$to" "$text"
+	done
+}

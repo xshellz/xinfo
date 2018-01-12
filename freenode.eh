@@ -12,29 +12,23 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
 # or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
 
-# Copyright 2015 - Øyvind 'bolt' Hvidsten	<bolt@dhampir.no>
+# Copyright 2016 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
 
-! ${GHOST:-false} || return 0
 
-if
-	{ [[ -z "${FIFO:-}" ]] && sf_mkfifo -qo FIFO; } ||
-	{ [[ -z "${fifo_fd:-}" ]] && sf_mkfifo -qf "$FIFO" >/dev/null; } ||
-	{ [[ -z "${fifo_fd:-}" ]] && [[ -p "$FIFO" ]]; }
-then
-	sf_stdout "FIFO: $FIFO"
-	exec {fifo_fd}<>"$FIFO"
-elif [[ -z "${fifo_fd:-}" ]]; then
-	sf_error "FIFO is FUBAR: ${FIFO:-}"
-	exit 1
-fi
+case "${cmd^^}" in
+	$ERR_NICKNAMEINUSE)
+		sf_stderr "Freenode: Nickname is already in use."
+		say "NickServ" "GHOST $NICK $PASS"
+		return 0
+	;;
+	$ERR_UNAVAILRESOURCE)
+		sf_stderr "Freenode: Nickname is temporarily unavailable."
+		say "NickServ" "RELEASE $NICK $PASS"
+		return 0
+	;;
+	*)
+		sf_stderr "Freenode: Unknown error: ${cmd^^} ${data}"
+	;;
+esac
 
-function fifo_tick
-{
-	local line
-	while read -t0 -r -u "$fifo_fd"; do
-		read -t1 -r -u "$fifo_fd" line || break
-		[[ -n "$line" ]] || continue
-		sf_stdout "$MOD: $line"
-		tx "$line"
-	done
-}
+return 1

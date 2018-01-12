@@ -18,7 +18,7 @@
 
 if ! isset "httptitle_data"; then
 	httptitle_data="$(sf_tmpdir)/httptitle_$$.dat"
-	sf_mkfile -qf "$httptitle_data"
+	sf_mkfile -qf "$httptitle_data" >/dev/null
 fi
 
 function httptitle_canprint
@@ -67,7 +67,7 @@ function httptitle_do
 				return
 			fi
 			title=$(sf_web2sane -p <<<"$title" | sf_oneline)
-			domain=$(cut -d\/ -f 3 <<<"$url")						# cut http(s)://
+			domain=$(cut -d '/' -f 3 <<<"$url")						# cut http(s)://
 			[[ "$domain" != *"."*"."* ]] || domain=${domain#www.*}	# cut any www. part
 			
 			httptitle_canprint "$host" "true" || break

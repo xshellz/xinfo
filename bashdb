@@ -1,0 +1,1994 @@
+#!/usr/bin/env bash
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2, June 1991.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>
+
+# Copyright 2017 - Øyvind Hvidsten   <bolt@dhampir.no>
+
+# Description:
+#
+# Library to interact with a simple two dimensional table stored as pipe separated
+# base64 encoded strings in a flat file. A simplistic database relying on very few
+# external tools.
+#
+# Functions are provided for adding and removing data to a dynamic table structure.
+# The library supports column names, searching, and pretty printing of table data.
+#
+# URL: https://blog.dhampir.no/content/bashdb-a-single-dynamic-database-table-for-bash-scripts
+#
+
+# v1.00, 2017.10.09 - Initial v1.0 release
+#                   * All intended functionality implemented
+#
+# v1.01, 2017.10.11 - More features!
+#                   * Added -i <index> switch to db_set for list index insert
+#                     Without -i new items are added to the end as before
+#                   * Added db_rename and db_rename_column to rename keys and columns
+#                   * db_haskey renamed to db_has_key
+#                   * Added db_has_column
+#                   * Better error handling
+#                   * Various minor bugfixes
+#
+# v1.02, 2017.10.12 - Temp file issues
+#                   * More verbose handling of failing to create temporary files
+#
+# v1.03, 2017.10.13 - Better errors
+#                   * When superfluous parameters are entered, they are now printed for
+#                     easier debugging.
+#
+# v1.04, 2017.10.14 - Long key dumps
+#                   * Fixed output of dumps with long keys
+#                   * Much faster has_key function
+#                   * Added ability to look for a key by regex using db_keys -r
+#                   * Much faster search function
+#
+# v1.05, 2017.10.24 - List value searching
+#                   * Fixed a crash that would happen if attempting to search on a
+#                     column containing list values. As a slight bonus, the regex is
+#                     now evaluated for each item in a list
+#
+# v1.06, 2017.11.17 - Verify
+#                   * Expose internal db verification function through db_verify
+#
+# v1.07, 2017.11.25 - Allow empty default
+#                   * When specifying -d, empty strings are allowed
+#
+
+# include guard (..ish)
+if [[ -z "${_db_loaded:-}" ]]; then
+    _db_loaded=true
+else
+    return 0
+fi
+
+# needed for runfunc to find the functions
+_bashdb_header="db_"
+
+# show the help!
+function db_help
+{
+	# intro
+	_db_println "BashDB help" >&2
+
+	# basics
+	db_verify -?
+	db_set -?
+	db_get -?
+	db_dump -?
+
+	# list
+	db_keys -?
+	db_columns -?
+
+	# copy
+	db_copy_row -?
+
+	# rename
+	db_rename -?
+	db_rename_column -?
+
+	# searching
+	db_has_key -?
+	db_has_column -?
+	db_search -?
+
+	# cleanup
+	db_delete -?
+	db_delete_column -?
+	db_trim -?
+
+	# testing
+	db_testdb -?
+	db_selftest -?
+}
+
+# print help
+function _db_help
+{
+	{
+		_db_println
+		_db_println "  ---------- ${FUNCNAME[1]} ----------"
+		sed 's/\t/\ \ /g'
+		_db_println
+	} >&2
+}
+
+# printing stuff
+function _db_print { printf '%s' "$*" 2>/dev/null; }
+function _db_println { printf '%s\n' "$*" 2>/dev/null; }
+function _db_print0 { printf '%s\0' "$*" 2>/dev/null; }
+function _db_usage { _db_println "Usage: ${FUNCNAME[1]} $*" >&2; }
+function _db_error { _db_println "Error: $*" >&2; }
+function _db_func_error { _db_println "Error: ${FUNCNAME[1]}: $*" >&2; }
+function _db_badarg { _db_error '%s\n' "${FUNCNAME[1]}: Option -${OPTARG} requires an argument"; }
+function _db_badopt { _db_error "${FUNCNAME[1]}: Unknown option -${OPTARG}"; }
+function _db_debug { ! ${DB_DEBUG:-false} || printf 'DEBUG: %s %s\n' "${FUNCNAME[1]}" "$*" >&2 2>/dev/null; }
+function _db_noparam { _db_error "${FUNCNAME[1]}: Missing parameter: $*"; }
+function _db_extra_opt { _db_error "${FUNCNAME[1]}: Unknown parameter: $*"; ${FUNCNAME[1]} -?; }
+function _db_print_end { if ${1:-false}; then _db_println; else _db_print0; fi; }
+function _db_print_pad { _db_print "$2"; local pad; pad=$(($1 - ${#2})); if ((pad > 0)); then printf "%$(($1 - ${#2}))s" 2>/dev/null; fi; }
+function _db_tsprint { _db_print "$(date +'%Y-%m-%d %H:%M:%S (%z)') - $*"; }
+
+# read opts
+function _db_read_opt
+{
+	if [[ -z "$OPTARG" ]] && ${3:-true}; then
+		_db_error "${FUNCNAME[1]}: Option (-${opt}) can not be empty"
+		return 1
+	elif [[ -z "${!1:-}" ]]; then
+		if ${2:-false}; then
+			printf -v "$1" '%s' "${OPTARG,,}"
+		else
+			printf -v "$1" '%s' "$OPTARG"
+		fi
+	else
+		_db_error "${FUNCNAME[1]}: Option (-${opt}) can not be specified more than once"
+		return 1
+	fi
+}
+
+# check that a database exists, or create it
+function _db_check
+{
+	_db_debug "$@"
+
+	# options
+	local write=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":w" opt; do
+	case "$opt" in
+		w) write=true ;;
+		[?]) _db_badopt; return 1 ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# read column spec
+	local file=$1 colspec
+	if ! [[ -e "$file" ]] && ! touch "$file" 2>/dev/null; then
+		_db_error "Failed to create database: $file"
+		return 1
+	fi
+
+	# check permissions
+	[[ -f "$file" ]] || { _db_error "$file is not a regular file!"; return 1; }
+	[[ -r "$file" ]] || { _db_error "File $file is not readable!"; return 1; }
+	! $write || [[ -w "$file" ]] || { _db_error "File $file is not writable!"; return 1; }
+}
+
+# verify that a database is relatively ok...
+function db_verify
+{
+	_db_debug "$@"
+
+	# options
+	local file
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Verify that a database file is good to use
+		
+		REQUIRED:
+			-f <file>
+				The path to a database file
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		[?]) _db_badopt; return 1 ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# nothing to do here...
+}
+
+# reading files
+function _db_get_data { grep -v "^bashdb|" "$1"; }
+function _db_get_head { grep -m 1 "^bashdb|" "$1"; }
+function _db_get_row { grep -m 1 "^${2}|" "$1"; }
+
+# get the columns
+function _db_get_cols
+{
+	_db_debug "$@"
+
+	# options
+	local file
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":f:" opt; do
+	case "$opt" in
+		f) _db_read_opt file ;;
+		[?]) _db_badopt; return 1 ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# read the first line (the colspec)A
+	local line
+	line=$(head -n 1 "$file")
+
+	# verify that this is a database or an empty file
+	if [[ "$line" != "bashdb|"* ]] && (( $(stat "$file" --format='%s') )); then
+		_db_error "Invalid database file: $file"
+		return 1
+	fi
+
+	# return
+	_db_print "${line#bashdb}"
+}
+
+# check if colspec has column
+function _db_colspec_contains
+{
+	_db_debug "$@"
+	local cols=$1 col=$2
+	[[ "${cols}|" = *"|${col}|"* ]]
+}
+
+# get index of column in return value from _db_get_cols
+function _db_get_col_index
+{
+	_db_debug "$@"
+	local column=$1 colspec=$2 index=0 n
+	while read -d '|' -r n; do
+		[[ "$n" != "$column" ]] || break
+		(( ++index ))
+	done <<<"${colspec#|}|"
+	_db_print "$index"
+}
+
+# encode/decode
+function _db_encode
+{
+	if (( $# )); then
+		_db_print "$*" | base64 -w 0
+	else
+		base64 -w 0
+	fi
+}
+function _db_decode { base64 -d 2>/dev/null; }
+
+# get a value
+function db_get
+{
+	_db_debug "$@"
+
+	# options
+	local file key colname="" default="" use_default=false index human=false zero=false colspec column value
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?c:d:f:hi:k:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Set or unset (set to empty) a value in the table
+		
+		REQUIRED:
+			-f <file>
+				The path to a database file
+			-k <key>
+				Which key to get
+
+		OPTIONS:
+			-c <column>
+				Which column to get
+				If this is not specified, the default unnamed column is used
+			-d <value>
+				A default value to display if the requested one is unset
+			-0
+				Append a null byte (\0) to the output, even if the value is not a list
+			-h
+				Append a newline to the output
+			-i <index>
+				When dealing with list values, get a single item from the list
+				Indexes start from 0 for the first item
+EOF
+			return 0
+		;;
+		0) zero=true ;;
+		c) colname=$(_db_encode "${OPTARG,,}") ;;
+		d) default=$OPTARG; use_default=true ;;
+		f) _db_read_opt file ;;
+		h) human=true ;;
+		i) index=$OPTARG ;;
+		k) _db_read_opt key true ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	[[ -n "${key:-}" ]] || { _db_noparam "-k <key>"; return 1; }
+	[[ "${index:-0}" =~ [0-9]+ ]] || { _db_func_error "Invalid index: $index"; return 1; }
+	! $human || ! $zero || { _db_func_error "-0 and -h are mutually exclusive"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# find column
+	colspec=$(_db_get_cols -f "$file")
+	if _db_colspec_contains "$colspec" "$colname"; then
+		column=$(_db_get_col_index "$colname" "$colspec")
+
+		# encode key
+		key=$(_db_encode "$key")
+
+		# find value
+		value=$(_db_get_row "$file" "$key" | cut -d '|' -f $((column+2)))
+	else
+		value=""
+	fi
+
+	# print value
+	if [[ -n "$value" ]]; then
+		if [[ "$value" != *','* ]] && [[ -z "${index:-}" ]]; then
+			_db_print "$value" | _db_decode
+			if $human || $zero; then
+				_db_print_end "$human"
+			fi
+			return 0
+		else
+			local i=0
+
+			# print the correct index, or all of them if index is unset
+			while read -r -d ',' value; do
+				[[ -z "${index:-}" ]] || (( i++ == index )) || continue
+				_db_print "$value" | _db_decode
+				_db_print_end "$human"
+				[[ -z "${index:-}" ]] || return 0
+			done <<<"${value},"
+
+			# if we get here with an index, it's bad. otherwise, everything is fine
+			[[ -z "${index:-}" ]] && return 0 || return 1
+		fi
+	fi
+
+	# ..or the default
+	if $use_default; then
+		_db_print "$default"
+		if $human || $zero; then
+			_db_print_end "$human"
+		fi
+	else
+		return 1
+	fi
+}
+
+# get a temp file in a variable
+function _db_mktemp
+{
+	_db_debug "$@"
+	while (( $# )); do
+		if [[ -n "${TMP:-}" ]]; then
+			while true; do
+				printf -v "$1" '%s' "${TMP}/bashdb.$$.${RANDOM}.tmp"
+				if ! [[ -e "${!1}" ]]; then
+					>"${!1}"
+					break
+				fi
+			done
+		elif type mktemp >/dev/null 2>&1; then
+			printf -v "$1" '%s' "$(mktemp)" || exit $?
+		else
+			_db_error 'Could not create temp file. Either set $TMP or install mktemp'
+			exit 1
+		fi
+		chmod 600 "${!1}"
+		shift
+	done
+}
+
+# remove a key
+function db_delete
+{
+	_db_debug "$@"
+
+	# options
+	local file key
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:k:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Delete a row from the table
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+			-k <key>
+				The key to delete
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		k) _db_read_opt key true ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	[[ -n "${key:-}" ]] || { _db_noparam "-k <key>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check -w "$file" || return 1
+
+	# check for existence
+	if ! db_has_key -f "$file" -k "$key"; then
+		_db_func_error "No such key: $key"
+		return 1
+	fi
+
+	# encode key
+	key=$(_db_encode "$key")
+
+	# remove
+	(
+		_db_mktemp tmp
+		trap "rm \"$tmp\"" EXIT
+
+		grep -v "^${key}|" "$file" >"$tmp"
+		cat "$tmp" >"$file"
+	)
+}
+
+# copy a database to a new table, possibly excluding a single column
+# used internally to trim empty columns and to remove columns on command
+function _db_copy
+{
+	_db_debug "$@"
+
+	# sanity
+	(( $# == 2 )) || (( $# == 3 )) || { _db_usage "<source> <target> [exclude column]"; return 1; }
+	local src=$1 tgt=$2
+	_db_check "$src" || return 1
+	_db_check -w "$tgt" || return 1
+	[[ "$src" != "$tgt" ]] || { _db_func_error "Source file can not equal target"; return 1; }
+	if (( $(stat "$tgt" --format='%s') )); then
+		_db_func_error "Target file \"$tgt\" is not empty"
+		return 1
+	fi
+
+	# read columns and base lengths
+	local columns=( )
+	while read -r -d $'\0' col; do
+		columns+=( "$col" )
+	done < <(db_columns -f "$src")
+
+	# find empty columns
+	local i
+	for ((i="$(( ${#columns[@]} - 1 ))"; i >= 0; i--)); do
+		if
+			{ (( $# != 3 )) || [[ "${columns[i]}" != "$3" ]]; } &&
+			_db_get_data "$src" | cut -d '|' -f "$((i+2))" | grep -q -m 1 -v "^$"
+		then
+			columns[i]="$((i+2))"
+		else
+			unset columns[i]
+		fi
+	done
+
+	# copy
+	cut -d '|' -f "1,$( IFS=','; _db_print "${columns[*]:-}"; )" "$src" | grep -E -v "^[^|]+[|]+$" >"$tgt"
+}
+
+# use _db_copy to remove a column
+function db_delete_column
+{
+	_db_debug "$@"
+
+	# options
+	local file colname
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?c:f:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Delete a column from all rows in a table
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+
+		OPTIONS:
+			-c <column>
+				The column to delete
+				If none is specified, we will look for the default column
+EOF
+			return 0
+		;;
+		c) _db_read_opt colname true false ;;
+		f) _db_read_opt file ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check -w "$file" || return 1
+
+	# check that the column exists
+	local col found=false
+	while read -r -d $'\0' col; do
+		if [[ "$col" = "${colname:-}" ]]; then
+			found=true
+			break
+		fi
+	done < <(db_columns -f "$file" 2>/dev/null)
+	if ! $found; then
+		if [[ -n "$colname" ]]; then
+			_db_func_error "Table has no such column: $colname"
+		else
+			_db_func_error "Table has no default column to remove"
+		fi
+		return 1
+	fi
+
+	# write to database
+	(
+		_db_mktemp tmp
+		trap "rm \"$tmp\"" EXIT
+
+		_db_copy "$file" "$tmp" "${colname:-}"
+		cat "$tmp" >"$file"
+	)
+}
+
+# trim a table, removing unused columns
+function db_trim
+{
+	_db_debug "$@"
+
+	# options
+	local file
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Trim a table, removing all columns that are unset in all rows
+	There's normally no reason to do this, as empty columns aren't a substantial performance issue,
+	and you might want to use them again later.
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check -w "$file" || return 1
+
+	# copy
+	(
+		_db_mktemp tmp
+		trap "rm \"$tmp\"" EXIT
+
+		_db_copy "$file" "$tmp"
+		cat "$tmp" >"$file"
+	)
+}
+
+# search for a key given a full or partial value
+function db_search
+{
+	_db_debug "$@"
+
+	# options
+	local file regex colname="" dump=false human=false partial=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?c:dhf:r:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Searches for keys where a given column matches a regular expression
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+			-r <regex>
+				The regular expression used to match values
+
+		OPTIONS:
+			-d
+				Dump the results using db_dump instead of listing keys
+			-h
+				Human readable output. Replaces the default null byte (\0) key separator with a newline
+			-c <column>
+				The column to search in
+				The default column is used if this is not provided
+EOF
+			return 0
+		;;
+		c) _db_read_opt colname true false ;;
+		d) dump=true ;;
+		f) _db_read_opt file ;;
+		h) human=true ;;
+		r) _db_read_opt regex ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	[[ -n "${regex:-}" ]] || { _db_noparam "-r <regex>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# encode column
+	colname=$(_db_encode "$colname")
+
+	# find the column
+	local colspec column
+	colspec=$(_db_get_cols -f "$file")
+	if ! _db_colspec_contains "$colspec" "$colname"; then
+		return 0 # nothing to see here
+	fi
+	column=$(_db_get_col_index "$colname" "$colspec")
+
+	# find the value
+	local key value s
+	while IFS='|' read -r key value; do
+		while read -r -d ',' s; do
+			s=$(_db_decode <<<"$s" | _db_print_filter)
+			if [[ "$s" =~ $regex ]]; then
+				if $dump; then
+					dumpopts+=( "-k" "$(_db_decode <<<"$key")" )
+				else
+					_db_print "$key" | _db_decode
+					_db_print_end "$human"
+				fi
+				continue 2
+			fi
+		done <<<"${value},"
+	done < <(_db_get_data "$file" | cut -d '|' -f 1,$((column+2)))
+	
+	# dump?
+	if [[ -n "${dumpopts[*]:-}" ]]; then
+		db_dump -f "$file" "${dumpopts[@]}"
+	fi
+}
+
+# set a value
+function db_set
+{
+	_db_debug "$@"
+
+	# options
+	local file key values=() colname="" stdin=false colspec column mode index
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?c:f:k:i:Im:v:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Get a value (or a provided default) from a table
+		
+		REQUIRED:
+			-f <file>
+				The path to a database file
+			-k <key>
+				Which key to modify
+
+		OPTIONS:
+			-c <column>
+				Which column to modify
+				If this is not specified, the default unnamed column is used
+			-i <index>
+				When dealing with list values, specify an index to insert the values add
+				Only makes sense in conjunction with "-m add"
+				Without -i, added values will be appended to the end of the list
+				This can also be used to reorder one or more items in the list
+				Indexes start from 0 for the first item
+			-I
+				Read value (text or binary) from standard input (pipe)
+				Can not be combined with -v
+			-v <value>
+				The value to set. Can be specified multiple times
+			-m <add|remove>
+				Specifies that the provided values should be added or removed from any existing ones
+EOF
+			return 0
+		;;
+		c) colname=$(_db_encode "${OPTARG,,}") ;;
+		f) _db_read_opt file ;;
+		k) _db_read_opt key true ;;
+		m) _db_read_opt mode ;;
+		i) index=$OPTARG ;;
+		I) stdin=true ;;
+		v) [[ -z "$OPTARG" ]] || values+=( "$(_db_encode "$OPTARG")" ) ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	[[ -n "${key:-}" ]] || { _db_noparam "-k <key>"; return 1; }
+	[[ "${index:-0}" =~ [0-9]+ ]] || { _db_func_error "Invalid index: $index"; return 1; }
+	case "${mode:-}" in
+		'') ;;
+		add|remove) ! $stdin || { _db_func_error "-m and -I are mutually exclusive"; return 1; } ;;
+		*) _db_func_error "Unknown mode (add|remove): $mode"; return 1 ;;
+	esac
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check -w "$file" || return 1
+
+	# read value from stdin, encode
+	if $stdin; then
+		if [[ -n "${values[*]:-}" ]]; then
+			_db_error "-I was specified while a value parameter was provided"
+			exit 1
+		fi
+		values+=( "$(_db_encode)" )
+	fi
+
+	# find column
+	colspec=$(_db_get_cols -f "$file")
+	if ! _db_colspec_contains "$colspec" "$colname"; then
+		if [[ -n "${values[*]:-}" ]]; then
+			colspec+="|${colname}"
+		else
+			return 0 # no value and no column? nothing to unset
+		fi
+	fi
+	column=$(_db_get_col_index "$colname" "$colspec")
+
+	# encode key
+	key=$(_db_encode "$key")
+
+	# write to database
+	(
+		_db_mktemp tmp script
+		trap "rm \"$tmp\" \"$script\"" EXIT
+
+		# write everything except our key
+		_db_println "bashdb${colspec}" >"$tmp"
+		_db_get_data "$file" | grep -v "^${key}|" >>"$tmp" || :
+
+		# get the row
+		IFS='|' read -r -a row <<<"$(_db_get_row "$file" "$key" || _db_print "$key")"
+
+		# create empty columns until the position we want to set
+		pos=$((column+1))
+		for (( i=${#row[@]}; i < pos; i++ )); do row[i]=""; done
+
+		# add/remove (list) support
+		case "${mode:-}" in
+			add)
+				mapfile -t values < <(
+					i=0
+					while read -r -d ',' s; do
+						[[ -n "$s" ]] || continue
+						if [[ -n "${index:-}" ]] && (( i == index )); then
+							( IFS=$'\n'; _db_println "${values[*]}" )
+							(( ++i ))
+						fi
+						for v in "${values[@]}"; do
+							[[ "${v,,}" != "${s,,}" ]] || continue 2
+						done
+						_db_println "$s"
+						(( ++i ))
+					done <<<"${row[pos]:-},"
+					if [[ -z "${index:-}" ]] || (( i <= index )); then
+						( IFS=$'\n'; _db_println "${values[*]}" )
+					fi
+				)
+			;;
+			remove)
+				mapfile -t values < <(
+					while read -r -d ',' s; do
+						[[ -n "$s" ]] || continue
+						for v in "${values[@]}"; do
+							[[ "${v,,}" != "${s,,}" ]] || continue 2
+						done
+						_db_println "$s"
+					done <<<"${row[pos]:-},"
+				)
+			;;
+		esac
+
+		# concatenate new value
+		row[pos]="$( IFS=','; echo "${values[*]:-}"; )"
+
+		# unset empty values at the back of the row
+		for (( i=${#row[@]}-1; i > 0; i-- )); do
+			[[ -z "${row[i]}" ]] && unset row[i] || break
+		done
+
+		# if we still have more than just a key, write the row
+		if (( i )); then
+			( IFS='|'; _db_println "${row[*]}"; ) >>"$tmp"
+		fi
+
+		# save
+		cat "$tmp" >"$file"
+	)
+}
+
+# list keys
+function db_keys
+{
+	_db_debug "$@"
+
+	# options
+	local file human=false regex=""
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:hr:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Show a list of the keys currently stored in the table
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+
+		OPTIONS:
+			-h
+				Human readable output. Replaces the default null byte (\0) separator with a newline
+			-r <regex>
+				Only keys matching this regex will be returned
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		h) human=true ;;
+		r) _db_read_opt regex ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# list
+	_db_get_data "$file" | cut -d '|' -f 1 | while read -r key; do
+		if [[ -n "$regex" ]]; then
+			key=$(_db_decode <<<"$key")
+			[[ "$key" =~ $regex ]] || continue
+			_db_print "$key"
+		else
+			_db_print "$key" | _db_decode
+		fi
+		_db_print_end "$human"
+	done
+}
+
+# list columns
+function db_columns
+{
+	_db_debug "$@"
+
+	# options
+	local file human=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:h" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Show a list of the columns currently stored in the table
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+
+		OPTIONS:
+			-h
+				Human readable output. Replaces the default null byte (\0) separator with a newline
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		h) human=true ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# list
+	local colname colspec
+	colspec=$(_db_get_cols -f "$file")
+	while read -d '|' -r colname; do
+		_db_print "$colname" | _db_decode
+		_db_print_end "$human"
+	done <<<"${colspec#|}|"
+}
+
+# check if key exists
+function db_has_key
+{
+	_db_debug "$@"
+
+	# options
+	local file key
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:k:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Returns 0 if a given key exists, 1 if it does not
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+			-k <key>
+				The key
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		k) _db_read_opt key true ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	[[ -n "${key:-}" ]] || { _db_noparam "-k <key>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+
+	# find it!
+	_db_get_row "$file" "$(_db_encode "$key")" >/dev/null 2>&1
+}
+
+# check if column exists
+function db_has_column
+{
+	_db_debug "$@"
+
+	# options
+	local file colname
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:c:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Returns 0 if a given column exists, 1 if it does not
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+
+		OPTIONS:
+			-c <column>
+				The column
+				If none is specified, we will look for the default column
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		c) _db_read_opt colname true false ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+
+	db_columns -f "$file" |
+	{
+		while read -r -d $'\0' c; do
+			if [[ "${colname:-}" = "$c" ]]; then
+				return 0
+			fi
+		done
+		return 1
+	}
+}
+
+
+# generate some testdata
+function db_testdb
+{
+	_db_debug "$@"
+
+	# options
+	local file
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Generate a simple test database with some values to play around with
+	Dumps the table after creating it
+
+		REQUIRED:
+			-f <file>
+				Path to a non-existing table that will be created and filled with test data
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	if [[ -e "$file" ]]; then
+		_db_func_error "Database file already exists. Will not generate test data here."
+		exit 1
+	fi
+	_db_check -w "$file" || return 1
+
+	# save some stuff we can use to test with
+	db_set -f "$file" -k  "20" -c "First Name"	-v "John"
+	db_set -f "$file" -k  "35" -c "First Name"	-v "Henry"
+	db_set -f "$file" -k  "42" -c "First Name"	-v "Peter"
+	db_set -f "$file" -k "200" -c "First Name"	-v "Luke"
+	db_set -f "$file" -k  "20" -c "Last Name"	-v "Davis"
+	db_set -f "$file" -k  "35" -c "Last Name"	-v "Meyer"
+	db_set -f "$file" -k  "42" -c "Last Name"	-v "de la Hunt"
+	db_set -f "$file" -k "200" -c "Last Name"	-v "Jackson"
+	db_set -f "$file" -k  "35"					-v "ACTIVE"
+	db_set -f "$file" -k "200"					-v "ACTIVE"
+	db_set -f "$file" -k  "20" -c "Comment"		-v "Wears a black trenchcoat"
+	db_set -f "$file" -k  "42" -c "Comment"		-v "Weirdo"
+
+	# dump it out
+	_db_println "${file}:"
+	db_dump -f "$file"
+}
+
+# filter data for dump
+function _db_print_filter { sed -e 's/[^[:print:]]//g'; }
+function _db_dump_filter
+{
+	_db_print_filter | tr '\n' ' ' | tr -d '\r\t' | tr -s ' ' |
+	{
+		read -r value || :
+		if (( ${#value} > 50 )); then
+			trunc=$'\xe2\x80\xa6'" [len:${#value}]"
+			value="${value:0:$((50-${#trunc}))}${trunc}"
+		fi
+		_db_print "$value"
+	}
+}
+
+# dump a database as text
+function db_dump
+{
+	_db_debug "$@"
+
+	# options
+	local file raw=false header=true opt_keys=()
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:rRk:" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Display a table to a user, with UTF-8 character table lines.
+		
+		REQUIRED:
+			-f <file>
+				The path to a database file
+
+		OPTIONS:
+			-r
+				Raw dump, displays the raw database data for the requested rows
+			-R
+				Raw dump without the column header (data only)
+			-k <key>
+				Specify keys to dump. Can be specified multiple times
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		r) raw=true ;;
+		R) raw=true; header=false ;;
+		k) [[ -z "$OPTARG" ]] || opt_keys+=( "${OPTARG,,}" ) ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	if ! [[ -e "$file" ]]; then
+		_db_func_error "Database does not exist: $file"
+		exit 1
+	fi
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# find keys
+	local keys=() key
+	while read -r -d $'\0' key; do
+		keys+=( "$key" )
+	done < <(
+		if [[ -n "${opt_keys[*]:-}" ]]; then
+			for key in "${opt_keys[@]}"; do
+				_db_print0 "$key"
+			done
+		else
+			db_keys -f "$file"
+		fi
+	)
+	if [[ -z "${keys[*]:-}" ]]; then
+		_db_func_error "No data"
+		return 0
+	fi
+
+	# for raw output, we now have what we need
+	if $raw; then
+		(
+			_db_mktemp tmp
+			trap "rm \"$tmp\"" EXIT
+
+			# copy the column spec
+			! $header || head -n 1 "$file" >"$tmp"
+
+			# copy data
+			for key in "${keys[@]}"; do
+				if ! db_has_key -f "$file" -k "$key"; then
+					_db_func_error "No such key: $key"
+					return 1
+				fi
+				_db_get_row "$file" "$(_db_encode "$key")" >>"$tmp"
+			done
+
+			# trim any now unused columns
+			db_trim -f "$tmp"
+
+			# output
+			cat "$tmp"
+		)
+		return 0
+	fi
+
+	# determine lengths and sort options
+	local keylen=3 # length of "KEY"
+	local sortopt="-n"
+	for key in "${keys[@]}"; do
+		[[ "$key" =~ ^-?[0-9]+$ ]] || sortopt=""
+		key=$(_db_dump_filter <<<"$key")
+		(( ${#key} <= keylen )) || (( keylen = ${#key} ))
+	done
+
+	# sort keys
+	mapfile -t keys < <(
+		for key in "${keys[@]}"; do
+			_db_print "$key"
+			_db_println
+		done | sort $sortopt
+	)
+
+	# read columns and base lengths
+	local columns=() lengths=() col
+	while read -r -d $'\0' col; do
+		columns+=( "$col" )
+		lengths+=( "${#col}" )
+	done < <(db_columns -f "$file")
+
+	# find column data
+	local data=() value
+	local key row col
+	local r=0 c
+	local offset offset_row max_pos=0
+	for key in "${keys[@]}"; do
+		data[$((r * ( ${#columns[@]} + 1 ) ))]=$(_db_dump_filter <<<"$key")
+		c=1 # the key is in the first column, so start at 1
+		offset_row=0
+		while read -r -d '|' col; do
+			offset=0
+			while read -r -d ',' line; do
+				value=$(_db_decode <<<"$line" | _db_dump_filter)
+				local pos=$(( ( (r+offset) * ( ${#columns[@]} + 1 ) ) + c ))
+				data[pos]=$value
+				(( pos <= max_pos )) || max_pos=$pos
+				(( ${#value} <= lengths[c-1] )) || lengths[c-1]=${#value}
+				(( offset <= offset_row )) || offset_row=$offset
+				(( ++offset ))
+			done <<<"${col},"
+			(( ++c ))
+		done < <(_db_get_row "$file" "$(_db_encode "$key")" | cut -d '|' -f 2-; _db_print '|')
+		(( r += offset_row + 1 ))
+	done
+
+	# lines
+	local box_side=$'\xe2\x95\x91'
+	local box_t=$'\xe2\x95\xa4'
+	local box_t2=$'\xe2\x95\xa7'
+	local box_top=$'\xe2\x95\x90'
+	local box_pipe=$'\xe2\x94\x82'
+	local box_side_left=$'\xe2\x95\x9f'
+	local box_side_right=$'\xe2\x95\xa2'
+	local box_ctl=$'\xe2\x95\x94'
+	local box_ctr=$'\xe2\x95\x97'
+	local box_cbl=$'\xe2\x95\x9a'
+	local box_cbr=$'\xe2\x95\x9d'
+	local box_cross=$'\xe2\x94\xbc'
+	local box_line=$'\xe2\x94\x80'
+
+	# spawn a separator line
+	function _db_separator
+	{
+		printf "{ %-${keylen}s"
+		for ((i=0; i<${#columns[@]}; i++)); do
+			printf " $box_pipe %${lengths[i]}s"
+		done
+		_db_println " }"
+	}
+
+	# top line
+	_db_separator | sed -e "s/ /$box_top/g" -e "s/$box_pipe/$box_t/g" -e "s/{/$box_ctl/g" -e "s/}/$box_ctr/g"
+
+	# print header
+	local i
+	printf "$box_side %-${keylen}s" "KEY"
+	for ((i=0; i<${#columns[@]}; i++)); do
+		col="${columns[i]}"
+		len="${lengths[i]}"
+		_db_print " $box_pipe "
+		_db_print_pad "$len" "${col^^}"
+	done
+	_db_println " $box_side"
+
+	# header/data separator
+	_db_separator | sed -e "s/ /$box_line/g" -e "s/$box_pipe/$box_cross/g" -e "s/{/$box_side_left/g" -e "s/}/$box_side_right/g"
+
+	# print data
+	local i
+	for (( i=0; i<=max_pos; )); do
+
+		# key
+		_db_print "$box_side "
+		_db_print_pad "$keylen" "${data[i]:-}"
+		(( ++i ))
+
+		# columns
+		for length in "${lengths[@]}"; do
+			_db_print " $box_pipe "
+			_db_print_pad "$length" "${data[i]:-}"
+			(( ++i ))
+		done
+
+		_db_println " $box_side"
+	done
+
+	# bottom line
+	_db_separator | sed -e "s/ /$box_top/g" -e "s/$box_pipe/$box_t2/g" -e "s/{/$box_cbl/g" -e "s/}/$box_cbr/g"
+}
+
+# rename column
+function db_rename_column
+{
+	_db_debug "$@"
+
+	# options
+	local file src="" target="" overwrite=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:s:t:o" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Renames a single column to a new name, optionally overwriting it if it exists
+	Please think twice before overwriting your columns. This has the ability to
+	permanently remove a bunch of data.
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+			-s <source>
+				The source column
+			-t <target>
+				The target column
+
+		OPTIONS:
+			-o
+				Overwrite existing target column
+				Renaming to an existing target without -o will print an error message and return 1
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		s) _db_read_opt src true false ;;
+		t) _db_read_opt target true false ;;
+		o) overwrite=true ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	[[ "$src" != "$target" ]] || { _db_func_error "Source column can not equal target"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# the source column must exist
+	if ! db_has_column -f "$file" -c "$src"; then
+		_db_func_error "No such column: $src"
+		return 1
+	fi
+
+	# but the target should not
+	if db_has_column -f "$file" -c "$target"; then
+		if ! $overwrite; then
+			_db_func_error "Column already exists, use '-o' to overwrite: $target"
+			return 1
+		fi
+		db_delete_column -f "$file" -c "$target"
+	fi
+
+	# write the new name
+	(
+		_db_mktemp tmp
+		trap "rm \"$tmp\"" EXIT
+		{
+			_db_print "bashdb"
+			while read -r -d $'\0' col; do
+				if [[ "$col" = "$src" ]]; then
+					_db_print "|$(_db_encode "$target")"
+				else
+					_db_print "|$(_db_encode "$col")"
+				fi
+			done < <(db_columns -f "$file")
+			_db_println
+		} >"$tmp"
+		_db_get_data "$file" >>"$tmp"
+
+		cat "$tmp" >"$file"
+	)
+}
+
+# rename (change key)
+function db_rename
+{
+	_db_debug "$@"
+
+	# options
+	local file key target copy_opt=""
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:k:t:o" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Renames a single row with a provided key to a target key, optionally overwriting it if it exists
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+			-k <key>
+				The source key
+			-t <key>
+				The target key
+
+		OPTIONS:
+			-o
+				Overwrite existing target key
+				Renaming to an existing target without -o will print an error message and return 1
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		k) _db_read_opt key true ;;
+		t) _db_read_opt target true ;;
+		o) copy_opt="-o" ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	[[ -n "${key:-}" ]] || { _db_noparam "-k <key>"; return 1; }
+	[[ -n "${target:-}" ]] || { _db_noparam "-t <target>"; return 1; }
+	[[ "$key" != "$target" ]] || { _db_func_error "Source key can not equal target"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# do it
+	db_copy_row -f "$file" -k "$key" -t "$target" $copy_opt
+	db_delete -f "$file" -k "$key"
+}
+
+# copy a row
+function db_copy_row
+{
+	_db_debug "$@"
+
+	# options
+	local file key target overwrite=false
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?f:k:t:o" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Copies a single row with a provided key to a target row, optionally overwriting it if it exists
+
+		REQUIRED:
+			-f <file>
+				The path to a database file
+			-k <key>
+				The source key
+			-t <key>
+				The target key
+
+		OPTIONS:
+			-o
+				Overwrite existing target key
+				Copying to an existing target without -o will print an error message and return 1
+EOF
+			return 0
+		;;
+		f) _db_read_opt file ;;
+		k) _db_read_opt key true ;;
+		t) _db_read_opt target true ;;
+		o) overwrite=true ;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	# sanity
+	[[ -n "${file:-}" ]] || { _db_noparam "-f <file>"; return 1; }
+	[[ -n "${key:-}" ]] || { _db_noparam "-k <key>"; return 1; }
+	[[ -n "${target:-}" ]] || { _db_noparam "-t <target>"; return 1; }
+	[[ "$key" != "$target" ]] || { _db_func_error "Source key can not equal target"; return 1; }
+	(( $# == 0 )) || { _db_extra_opt "$@"; return 1; }
+	_db_check "$file" || return 1
+
+	# the source key must exist
+	if ! db_has_key -f "$file" -k "$key"; then
+		_db_func_error "No such key: $key"
+		return 1
+	fi
+
+	# but the target should not
+	if db_has_key -f "$file" -k "$target"; then
+		if ! $overwrite; then
+			_db_func_error "Key already exists, use '-o' to overwrite: $target"
+			return 1
+		fi
+		db_delete -f "$file" -k "$target"
+	fi
+
+	# encode keys
+	key=$(_db_encode "$key")
+	target=$(_db_encode "$target")
+
+	# copy and paste
+	# shellcheck disable=SC2094
+	{
+		_db_print "${target}|"
+		_db_get_row "$file" "$key" | cut -d '|' -f 2-
+	} >>"$file"
+}
+
+# db summing tool, only used for testing. we don't worry about security here
+function _db_sum { md5sum "$@" | cut -d ' ' -f 1; }
+
+# run a self test
+function db_selftest
+{
+	local OPTIND=1 OPTARG OPTERR opt
+	while getopts ":?" opt; do
+	case "$opt" in
+		[?])
+			if [[ "${OPTARG:-}" != '?' ]]; then
+				_db_badopt
+				${FUNCNAME[0]} -?
+				return 1
+			fi
+_db_help <<"EOF"
+	Run unit tests
+	No options, yet.
+EOF
+			return 0
+		;;
+		:) _db_badarg; return 1 ;;
+	esac
+	done
+	shift $((OPTIND-1))
+	if [[ "${1:-}" = "--" ]]; then shift; fi
+
+	time (
+		renice -n 19 $BASHPID >/dev/null
+
+		_db_println
+		_db_println "BashDB self test running"
+		_db_println
+
+		set -e
+		set -u
+		_db_mktemp tmp bin
+		trap "rm \"$tmp\" \"$bin\"" EXIT
+		_db_println "Temp DB: $tmp"
+		_db_println "Bin file: $bin"
+		_db_println
+
+		function verify
+		{
+			local key=$1 value=$2 col=${3:-} verify
+			verify=$(db_get -f "$tmp" -k "$key" -c "$col" || :)
+			if [[ "$value" != "$verify" ]]; then
+				_db_println "FAIL"
+				exit 1
+			fi
+		}
+
+		function add
+		{
+			local key=$1 value=$2 col=${3:-}
+			db_set -f "$tmp" -k "$key" -c "$col" -v "$value"
+		}
+
+		# dump empty db
+		_db_tsprint "Empty dump: "
+		if db_dump -f "$tmp" 2>/dev/null; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# simple adds
+		_db_tsprint "Add values: "
+		add "A" "1"
+		add "B" "2"
+		add "C" "3"
+		add "D" "4"
+		add "E" "5"
+		add "F" "6"
+		
+		# verify that they are still there
+		verify "A" "1"
+		verify "B" "2"
+		verify "C" "3"
+		verify "D" "4"
+		verify "E" "5"
+		verify "F" "6"
+		_db_println "OK"
+
+		# has_key?
+		_db_tsprint "Has key: "
+		if db_has_key -f "$tmp" -k "A"  && ! db_has_key -f "$tmp" -k "G"; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# add with column
+		_db_tsprint "Add with column: "
+		add "Alpha"   "First"  "Place"
+		add "Beta"    "Second" "Place"
+		add "Gamma"   "Third"  "Place"
+		add "Delta"   "Fourth" "Place"
+		add "Epsilon" "Fifth"  "Place"
+
+		# check delta
+		verify "D" "4"
+		verify "Delta" "Fourth" "Place"
+		_db_println "OK"
+
+		# lists
+		_db_tsprint "List values: "
+		if
+			db_set -f "$tmp" -k "multi" -c "list" -v "foo" -v "Yoink! Yes." -v "TESTING THIS" &&
+			[[ "$(db_get -f "$tmp" -k "multi" -c "list" | _db_sum)" = "9d0b153af790064ad30e6c6d0dea5dcb" ]] &&
+			[[ "$(db_get -f "$tmp" -k "multi" -c "list" -h | _db_sum)" = "b2e9f28322396acc5713a7f9e2b2bddc" ]] &&
+			db_copy_row -f "$tmp" -k "multi" -t "multi2" &&
+			[[ "$(db_get -f "$tmp" -k "multi2" -c "list" | _db_sum)" = "9d0b153af790064ad30e6c6d0dea5dcb" ]] &&
+			[[ "$(db_get -f "$tmp" -k "multi2" -c "list" -h | _db_sum)" = "b2e9f28322396acc5713a7f9e2b2bddc" ]]
+		then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# copy
+		_db_tsprint "Table copy: "
+		_db_copy "$tmp" "$bin"
+		if diff "$tmp" "$bin"; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# check speed
+		_db_tsprint "Add random values: "
+		for ((i=0; i<15; i++)); do
+			for ((j=0; j<12; j++)); do
+				db_set -c "$j" -f "$tmp" -k "random row $i" -v "random value $RANDOM"
+			done
+			_db_print "."
+		done
+		_db_println " OK"
+
+		# verify storing binary stuff
+		_db_tsprint "Binary storage (1M): "
+		dd if="/dev/urandom" of="$bin" bs=1M count=1 status="none"
+		db_set -I -c "bin" -f "$tmp" -k "Charlie" <"$bin"
+		if [[ $(db_get -c "bin" -f "$tmp" -k "Charlie" | _db_sum) = $(_db_sum <"$bin") ]]; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+		_db_tsprint "Binary storage (10M): "
+		dd if="/dev/urandom" of="$bin" bs=1M count=10 status="none"
+		db_set -I -c "bin" -f "$tmp" -k "Epsilon" <"$bin"
+		if [[ $(db_get -c "bin" -f "$tmp" -k "Epsilon" | _db_sum) = $(_db_sum <"$bin") ]]; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# copying
+		_db_tsprint "Row copy: "
+		add "Source" "50"
+		add "Source" "100" "Second"
+		add "Target" "Exists"
+		if
+			! db_copy_row -f "$tmp" -k "Source" -t "Target" 2>/dev/null &&
+			verify "Target" "Exists" &&
+			verify "Target" "" "Second" &&
+			db_copy_row -f "$tmp" -k "Source" -t "Target" -o &&
+			verify "Target" "50" &&
+			verify "Target" "100" "Second"
+		then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# check removal
+		_db_tsprint "Unset value: "
+		verify "A" "1"
+		add "A" "This should be removed" "COL1"
+		verify "A" "1"
+		verify "A" "This should be removed" "COL1"
+		add "A" ""
+		verify "A" ""
+		verify "A" "This should be removed" "COL1"
+		add "A" "" "COL1"
+		verify "A" "" "COL1"
+		_db_println "OK"
+		
+		# check default values
+		_db_tsprint "Default value: "
+		add "Beta" "" "Place"
+		if
+			[[ "$(db_get -c "Place" -d "default" -f "$tmp" -k "Beta")" = "default" ]] &&
+			[[ "$(db_get -c "NonExistentColumn" -d "default" -f "$tmp" -k "Beta")" = "default" ]]
+		then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# check that we are case insensitive
+		_db_tsprint "Case insensitivity: "
+		add "TeSt" "This is a TEST"
+		verify "Test" "This is a TEST"
+		verify "tEst" "This is a TEST"
+		verify "teSt" "This is a TEST"
+		verify "tesT" "This is a TEST"
+		add "tEsT" "Case insensitive column?" "HERE"
+		verify "tEsT" "Case insensitive column?" "hERE"
+		verify "tEsT" "Case insensitive column?" "HeRE"
+		verify "tEsT" "Case insensitive column?" "HErE"
+		verify "tEsT" "Case insensitive column?" "HERe"
+		_db_println "OK"
+
+		# test listings
+		_db_tsprint "Key list: "
+		db_keys -h -f "$tmp" >/dev/null
+		_db_println "OK"
+		_db_tsprint "Column list: "
+		db_columns -h -f "$tmp" >/dev/null
+		_db_println "OK"
+
+		# test delete
+		_db_tsprint "Delete row: "
+		add "test" ""
+		add "test" "" "here"
+		db_delete -f "$tmp" -k "Alpha"
+		db_delete -f "$tmp" -k "Charlie"
+		if ! db_keys -h -f "$tmp" | grep -q "test" && ! db_has_key -f "$tmp" -k "Alpha" && ! db_has_key -f "$tmp" -k "Charlie" && db_has_key -f "$tmp" -k "Epsilon"; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# column deletion
+		_db_tsprint "Delete column: "
+		add "test" "foo"
+		add "test" "bar" "val1"
+		add "test" "baz" "val2"
+		add "test2" "bar" "val1"
+		db_delete_column -f "$tmp" -c "val1"
+		if ! db_columns -h -f "$tmp" | grep -q "val1" && db_columns -h -f "$tmp" | grep -q "val2" && ! db_delete_column -f "$tmp" -c "does not exist" 2>/dev/null; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# re-verify binary data after column delete
+		_db_tsprint "Binary survival: "
+		if [[ $(db_get -c "bin" -f "$tmp" -k "Epsilon" | _db_sum) = $(_db_sum <"$bin") ]]; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# test dump
+		_db_tsprint "Large dump: "
+		if db_dump -f "$tmp" >/dev/null; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# test trimming
+		_db_tsprint "Trimming: "
+		db_keys -f "$tmp" | while read -r -d $'\0' key; do
+			add "$key" "" # unsetting the default column
+		done
+		if
+			db_columns -f "$tmp" -h | grep -q "^$" &&
+			db_trim -f "$tmp" &&
+			! db_columns -f "$tmp" -h | grep -q "^$"
+		then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# test search dump
+		_db_tsprint "Search: "
+		add "findme" "12XXXx---0---xXXX21" "Bear"
+		add "findme" "tangent" "cat"
+		if db_search -d -f "$tmp" -c "cat" -r "tangent" | grep -q "12XXXx---0---xXXX21"; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# default column should be allowed in any order (bug test)
+		_db_tsprint "Default first column: "
+		>"$tmp"
+		add "A" "1"
+		add "B" "2" "B"
+		verify "A" "1"
+		verify "A" "" "B"
+		verify "B" ""
+		verify "B" "2" "B"
+		_db_println "OK"
+		_db_tsprint "Default second column: "
+		>"$tmp"
+		add "A" "1" "First"
+		add "B" "Foo"
+		add "A" "2" "Second"
+		verify "A" "1" "First"
+		verify "B" "Foo"
+		verify "A" "2" "Second"
+		_db_println "OK"
+
+		# handle a lot of columns
+		_db_tsprint "100 columns: "
+		>"$tmp"
+		for ((i=0; i<100; i++)); do
+			add "A" "$i" "$i"
+		done
+		for ((i=99; i>=0; i--)); do
+			verify "A" "$i" "$i"
+		done
+		_db_println "OK"
+
+		# the test db
+		_db_tsprint "Test DB generation: "
+		rm "$tmp"
+		db_testdb -f "$tmp" >/dev/null
+		if [[ "$(_db_sum <"$tmp")" = "32f5f2bd76155f605c371a210285ab26" ]]; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# test raw dumping
+		_db_tsprint "Raw dump (export): "
+		if [[ "$(db_dump -r -f "$tmp" | _db_sum)" = "$(_db_sum "$tmp")" ]]; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# drawing the testdb
+		_db_tsprint "Table drawing: "
+		if [[ "$(db_dump -f "$tmp" | _db_sum)" = "877a01267bd9428a3202dff0fad55bd1" ]]; then
+			_db_println "OK"
+		else
+			_db_println "FAIL"
+			exit 1
+		fi
+
+		# sweet!
+		_db_println
+		_db_println "BashDB self test completed successfully"
+		_db_println
+	)
+}
+
+
+# vim: tabstop=4:softtabstop=4:shiftwidth=4:noexpandtab

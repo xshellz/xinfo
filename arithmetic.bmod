@@ -26,17 +26,17 @@ function arithmetic_calc
 		res=$(awk "BEGIN{ print $q }")
 	then
 		if [[ "$res" = "inf" ]]; then
-			faction ${ARITHMETIC_PRIORITY:-5} "explodes"
+			faction "${ARITHMETIC_PRIORITY:-5}" "explodes"
 		else
-			freply ${ARITHMETIC_PRIORITY:-5} "$res"
+			freply "${ARITHMETIC_PRIORITY:-5}" "$res"
 		fi
 	else
-		faction ${ARITHMETIC_PRIORITY:-5} "is confused by this"
+		faction "${ARITHMETIC_PRIORITY:-5}" "is confused by this"
 	fi
 }
 
 if [[ -n "$reply" ]]; then
-	if [[ "$data" =~ ^[[:digit:]\^\(\)\.%/*+-]+$ ]]; then
+	if [[ "$data" =~ ^[[:digit:]^\(\)\.%/*+-]+$ ]]; then
 		arithmetic_calc "$data"
 	fi
 fi

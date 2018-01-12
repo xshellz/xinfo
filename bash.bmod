@@ -31,9 +31,9 @@ function bash_do
 	if [[ -z "${@:-}" ]]; then
 		url+="random1"
 	elif sf_integer "$@"; then
-		url+="$@"
+		url+="$*"
 	else
-		url+="search=$(sf_urlencode "$@")"
+		url+="search=$(sf_urlencode "$*")"
 	fi
 
 	if

@@ -24,7 +24,7 @@ function say_do
 		text=$2
 		text=$(filtertext "$text")
 		$say_func "$target" "$text"
-	elif admin_verbosehas $(src_host); then
+	elif admin_verbosehas "$(src_host)"; then
 		local channel text
 		read -r channel text <<<"$2" || :
 		if ! [[ "$channel" =~ ^#[[:alnum:]_-]+$ ]] || [[ -z "$text" ]]; then

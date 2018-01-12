@@ -16,28 +16,20 @@
 
 ! ${GHOST:-false} || return 0
 
-if [[ -z "${uptime_last:-}" ]]; then
-	uptime_last=0
+if [[ -z "${uptime_death:-}" ]]; then
+	uptime_death=${UPTIME_LIMIT:-0}
+	(( uptime_death *= 60 )) || :
+	if ((uptime_death > 0)) && [[ -n "${UPTIME_RANDOM:-}" ]]; then
+		(( uptime_death += ( UPTIME_RANDOM * (RANDOM%60) ) )) || :
+	fi
+	if (( uptime_death > 0 )); then
+		sf_stdout "Will die in $uptime_death seconds..."
+	fi
 fi
 
 function uptime_tick
 {
-	local minutes=$((SECONDS/60))
-	if ((minutes <= uptime_last)); then
-		return
-	fi
-	uptime_last=$minutes
-	local limit=${UPTIME_LIMIT:-0}
-	if ((limit <= 0)) || ((minutes < limit)); then
-		return
-	fi
-	if [[ -z "${current_channels[*]:-}" ]]; then
-		return
-	fi
-	local chance=$(sf_math_max 0 $(sf_math_min 100 ${UPTIME_STOPCHANCE:-100}))
-	if ((RANDOM%100+1 > chance)); then
-		return
-	fi
+	(( uptime_death > 0 )) && (( uptime_death < SECONDS )) || return 0
 	if [[ -n "${UPTIME_MESSAGE:-}" ]]; then
 		say_all "$UPTIME_MESSAGE"
 	fi

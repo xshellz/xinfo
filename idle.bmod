@@ -95,15 +95,16 @@ function idle_reply_do
 {
 	[[ "$data" = "FINGER "* ]] || return 1
 	[[ -n "${idle_wants[*]:-}" ]] || return 1
-	local src_nick=$(src_nick) tmp i line
+	local src_nick tmp i line
 	local timestamp reply reply_nick target
+	src_nick=$(src_nick)
 	src_nick=${src_nick,,}
 	for i in "${!idle_wants[@]}"; do
 		line=${idle_wants[i]}
 		IFS=" " read -r timestamp reply reply_nick target <<<"$line"
 		tmp=${target,,}
 		if [[ "${tmp}" = "$src_nick" ]]; then
-			unset "idle_wants[i]"
+			unset 'idle_wants[i]'
 			read -r tmp <<<"${data#FINGER }"
 			reply="$reply" reply_nick="$reply_nick" reply "$(src_nick) told me: $tmp"
 			return 0
@@ -115,8 +116,9 @@ function idle_reply_do
 function idle_probe_reply_do
 {
 	[[ -n "${idle_probe_wants[*]:-}" ]] || return 0
-	local src_nick=$(src_nick) tmp verb stuff line
+	local src_nick tmp verb stuff line
 	local timestamp reply reply_nick target
+	src_nick=$(src_nick)
 	src_nick=${src_nick,,}
 	for line in "${idle_probe_wants[@]}"; do
 		IFS=" " read -r timestamp reply reply_nick target <<<"$line"
@@ -137,7 +139,7 @@ function idle_tick
 			line=${idle_wants[i]}
 			IFS=" " read -r timestamp reply reply_nick target <<<"$line"
 			if (( timestamp + 7 < $(sf_unixtime) )); then
-				unset "idle_wants[i]"
+				unset 'idle_wants[i]'
 				reply="$reply" reply_nick="$reply_nick" reply "Timeout ($target)"
 			fi
 		done
@@ -147,7 +149,7 @@ function idle_tick
 			line=${idle_probe_wants[i]}
 			IFS=" " read -r timestamp reply reply_nick target <<<"$line"
 			if (( timestamp + (11*6) < $(sf_unixtime) )); then
-				unset "idle_probe_wants[i]"
+				unset 'idle_probe_wants[i]'
 				reply="$reply" reply_nick="$reply_nick" reply "Probe done ($target)"
 			fi
 		done

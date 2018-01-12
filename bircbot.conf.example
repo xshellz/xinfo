@@ -44,7 +44,7 @@ FLOOD_COUNT=4
 FLOOD_TIME=10
 
 # TIMEOUTS
-PING_TIME=150
+PING_TIME=120
 TIMEOUT=300
 
 # BANTER
@@ -53,8 +53,8 @@ BANTER_CHANNELS=( "#debian-bots" ) # where to banter - an empty array means "all
 BANTER_GREET_STATEMENTS=( "hi" "hello" "helo" "ehlo" )
 
 # RANDOM SHUTDOWN AFTER A GIVEN TIME
-#UPTIME_LIMIT=1440		# minutes
-#UPTIME_STOPCHANCE=5	# percent per minute passed
+#UPTIME_LIMIT=1440		# minutes (1 day)
+#UPTIME_RANDOM=120		# will stop after LIMIT + ( rand(0-100) * RANDOM )
 #UPTIME_MESSAGE="brb"	# written in all channels
 
 # OWNER (admin.bmod)
@@ -76,6 +76,9 @@ HTTPTITLE_DELAY=10		# how many seconds required between each url lookup per user
 # PROXY FOR HTTP REQUESTS MADE BY CURL
 #CURL_PROXY="localhost:1080"	# <host[:port]>
 
+# EXTRA CURL OPTIONS
+#CURL_OPTS="-4"
+
 # CHANNEL
 CHANNEL_GREET=true		# greet new users (those not seen before) using files named like "~/.bircbot/greeting-#debian.txt" where #debian is the channel name
 CHANNEL_SUBSTRING=true	# check for substrings of new users. if this is enabled, "jdoe-laptop" will not be greeted if "jdoe" has already been seen
@@ -83,3 +86,12 @@ CHANNEL_PUBMAX=true		# publically announce increased peak headcount in channel
 
 # FIFO INPUT
 #FIFO="$HOME/.bircbot/bircbot.fifo"
+
+# MOSQUITTO (MQTT)
+#MQTT_HOST="1.2.3.4"
+#MQTT_PORT="1883"
+#MQTT_USER="bircbot"
+#MQTT_PASS="secret"
+#MQTT_CAFILE="/etc/mosquitto/certs/ca.crt"
+#MQTT_CID="bircbot-$(hostname -s)-$(whoami)"
+#MQTT_BASE="/irc"		# the bot will send and receive messages on /<base>/channel/<channelname> and /<base>/priv/<nick>

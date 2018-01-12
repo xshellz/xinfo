@@ -252,6 +252,9 @@ RPL_ENDOFUSERS=394
 # ":Nobody logged in"
 RPL_NOUSERS=395
 
+# <nick> <host> :is now your hidden host...
+RPL_HOSTHIDDEN=396
+
 # "<nickname> :No such nick/channel"
 ERR_NOSUCHNICK=401
 
