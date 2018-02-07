@@ -110,7 +110,7 @@ function mosquitto_log_input
 function mosquitto_tick
 {
 	local topic text to
-	while read -r -t0 -u "$_mqtt_fd"; do
+	if read -r -t0 -u "$_mqtt_fd"; then
 		read -t1 -r -u "$_mqtt_fd" topic text || break
 		[[ -n "$text" ]] || continue
 		sf_stdout "MQTT: $topic $text"
@@ -124,5 +124,5 @@ function mosquitto_tick
 			*) continue ;;
 		esac
 		say "$to" "$text"
-	done
+	fi
 }
