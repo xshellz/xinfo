@@ -111,7 +111,7 @@ function mosquitto_tick
 {
 	local topic text to
 	if read -r -t0 -u "$_mqtt_fd"; then
-		read -t1 -r -u "$_mqtt_fd" topic text || break
+		read -t1 -r -u "$_mqtt_fd" topic text || return 0
 		[[ -n "$text" ]] || continue
 		sf_stdout "MQTT: $topic $text"
 		case "$topic" in
@@ -121,7 +121,7 @@ function mosquitto_tick
 			"${MQTT_BASE}/out/priv/"*)
 				to="${topic##*/}"
 			;;
-			*) continue ;;
+			*) return 0 ;;
 		esac
 		say "$to" "$text"
 	fi
