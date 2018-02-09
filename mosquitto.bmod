@@ -112,7 +112,7 @@ function mosquitto_tick
 	local topic text to
 	if read -r -t0 -u "$_mqtt_fd"; then
 		read -t1 -r -u "$_mqtt_fd" topic text || return 0
-		[[ -n "$text" ]] || continue
+		[[ -n "$text" ]] || return 0
 		sf_stdout "MQTT: $topic $text"
 		case "$topic" in
 			"${MQTT_BASE}/out/channel/"*)
