@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2, June 1991.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
+# or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
+
+# Copyright 2012 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+if ${GHOST:-false}; then
+	function admin_has {
+		return 1
+	}
+	return 0
+fi
+
+adminfile="$CONFIG/admin.dat"
+if ! sf_goodfile "$adminfile" && ! sf_mkfile -f "$adminfile"; then
+	sf_error "$MOD: Unable to create admin file!"
+	exit 1
+fi
+
+function admin_has
+{
+	local user=${1,,} line
+	grep -q "^${user}$" "$adminfile" && return 0 || return 1
+}
+function admin_add
+{
+	local user=${1,,}
+	if admin_has "$user"; then
+		sf_error "$MOD: $FUNCNAME: Attempting to add existing admin $user"
+		return 1
+	fi
+	echo "$user" >>"$adminfile"
+}
+function admin_remove
+{
+	local user=${1,,} file
+	if ! admin_has "$user"; then
+		sf_error "$MOD: $FUNCNAME: Attempting to remove unknown admin $user"
+		return 1
+	fi
+	sf_mkfile -qo file
+	grep -v "^${user}$" "$adminfile" >"$file"
+	cat "$file" >"$adminfile"
+	rm "$file"
+	sf_rm_abort "$file"
+}
+function admin_verbosehas
+{
+	local user=$1
+	if admin_has "$user"; then
+		return 0
+	fi
+	reply "$user is not a known admin of this bot."
+	return 1
+}
+
+function admin_process
+{
+	if (( data_count < 2 )); then
+		reply "Usage: admin <command>"
+		return
+	fi
+	if ! admin_verbosehas "$(src_host)"; then
+		return
+	fi
+	case "${data_larray[1]}" in
+		add)
+			if (( data_count < 3 )); then
+				reply "Usage: admin add <mask>"
+				return
+			fi
+			if admin_add "${data_array[2]}"; then
+				reply "New admin: ${data_array[2]}"
+			else
+				reply "Unable to add ${data_array[2]}. Already exists?"
+			fi
+		;;
+		remove)
+			if (( data_count < 3 )); then
+				reply "Usage: admin remove <mask>"
+				return
+			fi
+			if [[ "${data_array[2]}" = "${OWNER:-}" ]]; then
+				reply "$OWNER is currently set as the owner of this bot and can not be removed from the admin list."
+				return
+			fi
+			if admin_remove "${data_array[2]}"; then
+				reply "Admin removed: ${data_array[2]}"
+			else
+				reply "Unable to remove ${data_array[2]}. No such admin?"
+			fi
+		;;
+		owner)
+			reply "My owner is \"$OWNER\""
+		;;
+		raw)
+			if [[ "$(src_host)" != "${OWNER:-}" ]]; then
+				reply "Only the owner can do that."
+				return
+			fi
+			if (( data_count < 3 )); then
+				reply "Raw what?"
+				return
+			fi
+			local raw
+			raw="$(dfromi 2)"
+			reply "$raw"
+			tx "$(echo -e "$raw")"
+		;;
+		list)
+			local a
+			while read -r a; do
+				[[ -n "$a" ]] || continue
+				reply "$a"
+				sleep 0.5
+			done <"$adminfile"
+		;;
+		test)
+			reply "Success."
+		;;
+		testkill)
+			reply "Killing connection."
+			sleep 1
+			kill -TERM "$catpid"
+		;;
+		die|shutdown)
+			action_all "dies..."
+			clean_exit
+		;;
+		*)
+			reply "Unknown or malformed admin command."
+		;;
+	esac
+}
+
+if [[ -n "$reply" ]]; then
+	case "$data" in
+		admin|admin\ *)
+			admin_process "$data"
+		;;
+	esac
+fi
+
+if
+	[[ -n "${OWNER:-}" ]] &&
+	! admin_has "${OWNER}"
+then
+	sf_stdout "$MOD: Adding owner: $OWNER"
+	admin_add "$OWNER"
+fi

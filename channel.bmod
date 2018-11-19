@@ -1,0 +1,406 @@
+#!/usr/bin/env bash
+
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2, June 1991.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/gpl-2.0.html>,
+# or in pdf format at <http://www.dhampir.no/stuff/private/gpl-2.0.pdf>
+
+# Copyright 2012 - Øyvind 'bolt' Hvidsten   <bolt@dhampir.no>
+
+channel_seen_db="$CONFIG/seen.db"
+channel_max_db="$CONFIG/max.db"
+
+# using the database
+function seen_db
+{
+	local func=$1
+	shift
+	"db_${func}" -f "$channel_seen_db" "$@"
+}
+function max_db
+{
+	local func=$1
+	shift
+	"db_${func}" -f "$channel_max_db" "$@"
+}
+
+# migration to bashdb
+if [[ -e "$CONFIG/max.dat" ]]; then
+	(
+		while IFS=" " read -r c m; do
+			max_db set -k "$c" -v "$m"
+		done <"$CONFIG/max.dat"
+		mv "$CONFIG/max.dat" "$CONFIG/max.dat.old"
+	)
+fi
+if [[ -e "$CONFIG/seen.dat" ]]; then
+	(
+		while IFS=" " read -r n N c t; do
+			seen_db set -k "$n" -c "Nick" -v "$N"
+			seen_db set -k "$n" -c "Channel" -v "$c"
+			seen_db set -k "$n" -c "Time" -v "$t"
+		done <"$CONFIG/seen.dat"
+		mv "$CONFIG/seen.dat" "$CONFIG/seen.dat.old"
+	)
+fi
+
+if [[ -z "${CHANNELS[*]:-}" ]]; then
+	sf_warning "$MOD: No channel specified!"
+	return
+fi
+
+isset current_channels || declare -a current_channels=()
+unset_on_reset current_channels
+isset channel_names || declare -A channel_names=()
+unset_on_reset channel_names
+
+function channel_greetname
+{
+	local channel=$1 name=$2 string=$2 file line
+	file="$CONFIG/greeting-${channel}.txt"
+	if ${CHANNEL_GREET:-false}; then
+		if ! [[ -e "$file" ]]; then
+			sf_stdoutv "$MOD: No greeting for channel $channel: $file"
+		else
+			if ${CHANNEL_SUBSTRING:-false}; then
+				while
+					[[ -n "$string" ]] &&
+					! seen_db has_key -k "${string,,}" &&
+					string=$(cutright "$string")
+				do :; done
+			else
+				if ! seen_db has_key -k "${string,,}"; then
+					string=""
+				fi
+			fi
+			if (( ${#string} == 0 )); then
+				while read -r line; do
+					say "$channel" "$(eval echo "\"$line\"")"
+				done <"$file"
+			fi
+		fi
+	fi
+}
+function channel_addname
+{
+	local channel=$1 name=$2
+	name=${name#@}
+	name=${name#%}
+	name=${name#+}
+	if [[ -z "${channel_names["$channel"]:-}" ]]; then
+		channel_names["$channel"]="$name"
+	else
+		channel_names["$channel"]="${channel_names["$channel"]} $name"
+	fi
+	channel_seen "$channel" "$name"
+}
+function channel_removename
+{
+	local channel=$1 name=$2 list i
+	IFS=" " read -ra list <<<"${channel_names["$channel"]}"
+	for i in "${!list[@]}"; do
+		if [[ "${list[$i]}" = "$name" ]]; then
+			unset 'list[$i]'
+			break
+		fi
+	done
+	channel_names["$channel"]="${list[*]}"
+	channel_seen "$channel" "$name"
+}
+function channel_changename
+{
+	local src=$1 target=$2 list i j
+	for i in "${!channel_names[@]}"; do
+		if [[ " ${channel_names["$i"]} " = *" $src "* ]]; then
+			IFS=" " read -ra list <<<"${channel_names["$i"]}"
+			for j in "${!list[@]}"; do
+				if [[ "${list[$j]}" = "$src" ]]; then
+					list[$j]=$target
+					break
+				fi
+			done
+			channel_names["$i"]=${list[*]}
+			sf_stdoutv "$MOD: $src renamed to $target in $i"
+			channel_seen "$i" "$src"
+			channel_seen "$i" "$target"
+		fi
+	done
+}
+function channel_quit
+{
+	local src=$1 i
+	for i in "${!channel_names[@]}"; do
+		if [[ " ${channel_names["$i"]} " = *" $src "* ]]; then
+			sf_stdoutv "$MOD: $src removed from $i"
+			channel_removename "$i" "$src"
+		fi
+	done
+}
+function channel_headcount
+{
+	local channel=$1
+	local heads=${channel_names["$channel"]:-}
+	local count=0
+	while [[ "$heads" = *" "* ]]; do
+		((++count))
+		heads=${heads#* }
+	done
+	if [[ -n "$heads" ]]; then
+		((++count))
+	fi
+	sf_stdout $count
+}
+function channel_wejoined
+{
+	local channel=$1
+	sf_stdoutv "$MOD: We joined $channel"
+	unset 'channel_names[$channel]'
+	current_channels+=( "$channel" )
+}
+function channel_weleft
+{
+	local channel=$1 i
+	sf_stdoutv "$MOD: We left $channel"
+	unset 'channel_names[$channel]'
+	for i in "${!current_channels[@]}"; do
+		if [[ "${current_channels[i]}" = "$channel" ]]; then
+			unset 'current_channels[i]'
+			sf_stdoutv "$MOD: Channel $i removed"
+			break
+		fi
+	done
+}
+function channel_seen
+{
+	local channel=$1 name=$2
+	sf_stdoutv "$MOD: We saw $name in $channel"
+	seen_db set -k "$name" -c "Nick" -v "$name"
+	seen_db set -k "$name" -c "Channel" -v "$channel"
+	seen_db set -k "$name" -c "Time" -v "$(sf_unixtime)"
+}
+function channel_unsee
+{
+	local nick="$1" user channel nick
+	user=$(src_host)
+	if
+		[[ -z "$nick" ]]
+	then
+		reply "Usage: unsee <nick>"
+	elif
+		admin_verbosehas  "$user"
+	then
+		if seen_db delete -k "$nick" 2>/dev/null; then
+			reply "I have unseen $nick"
+		else
+			reply "I have never seen $nick :("
+		fi
+	fi
+}
+function channel_headcountquery
+{
+	if [[ "$target" != "#"* ]]; then
+		reply "That command can only be used in a channel"
+	else
+		reply "I see $(channel_headcount "$target") people in $target"
+	fi
+}
+function channel_namecount
+{
+	reply "I've seen $(seen_db keys -h | sf_wc -l) unique names"
+}
+function channel_seenquery
+{
+	local seenow=false n="${1,,}" nc="$1" nick j list
+	nick=$(src_nick)
+	nick=${nick,,}
+	if [[ "$n" = "$nick" ]]; then
+		reply "Yes, $(src_nick). I see you."
+	else
+		for i in "${!channel_names[@]}"; do
+			IFS=" " read -ra list <<<"${channel_names["$i"]}"
+			for j in "${!list[@]}"; do
+				if [[ "${list[$j],,}" = "$n" ]]; then
+					reply "I see ${list[$j]} in $i right now..."
+					seenow=true
+				fi
+			done
+		done
+		if ! $seenow; then
+			local time channel
+			nick=$(seen_db get -k "$nc" -c "nick") || :
+			time=$(seen_db get -k "$nc" -c "time") || :
+			channel=$(seen_db get -k "$nc" -c "channel") || :
+			if [[ -n "$time" ]]; then
+				reply "I saw $nick in $channel $(sf_seconds2dayslong $(($(sf_unixtime) - time))) ago"
+				unset N c t
+			else
+				reply "I have never seen ${nc} :("
+			fi
+		fi
+	fi
+}
+function channel_trackmax
+{
+	${CHANNEL_PUBMAX:-false} && ! ${GHOST:-false} || return 0
+	local channel=$1 current=$2 max
+	max=$(max_db get -k "$channel" -d "0")
+	if (( current > max )); then
+		say "$channel" "New peak headcount: $current"
+		max_db set -k "$channel" -v "$current"
+	fi
+}
+function channel_printmax
+{
+	local channel=$1 max
+	if [[ "$target" != "#"* ]]; then
+		reply "That command can only be used in a channel"
+		return 0
+	fi
+	max=$(max_db get -k "$channel" -d "0")
+	if (( max != 0 )); then
+		reply "I have seen a peak of $max people in ${channel}"
+	else
+		reply "I have no record of people in ${channel}"
+	fi
+}
+
+case "$cmd" in
+	JOIN)
+		if [[ "$(src_nick)" = "$nick" ]]; then
+			channel_wejoined "$target"
+		else
+			sf_stdoutv "$MOD: $(src_nick) joined $target"
+			channel_greetname "$target" "$(src_nick)"
+			channel_addname "$target" "$(src_nick)"
+			channel_trackmax "$target" "$(channel_headcount "$target")"
+		fi
+	;;
+	PART)
+		if [[ "$(src_nick)" = "$nick" ]]; then
+			channel_weleft "$target"
+		else
+			sf_stdoutv "$MOD: $(src_nick) left $target"
+			channel_removename "$target" "$(src_nick)"
+		fi
+	;;
+	KICK)
+		if [[ "${data%% *}" = "$nick" ]]; then
+			channel_weleft "$target"
+			sf_timer -r "channel_join" 0
+		else
+			sf_stdoutv "$MOD: $(src_nick) kicked ${data%% *} from $target"
+			channel_removename "$target" "${data%% *}"
+		fi
+	;;
+	QUIT)
+		sf_stdoutv "$MOD: $(src_nick) quit"
+		channel_quit "$(src_nick)"
+	;;
+	NICK)
+		sf_stdoutv "$MOD: $(src_nick) is now known as ${target#:}"
+		channel_changename "$(src_nick)" "${target#:}"
+	;;
+	$ERR_INVITEONLYCHAN)
+		if sf_timer "knock_${data%% *}" 600; then
+			tx "KNOCK ${data%% *}"
+		fi
+	;;
+	$RPL_NAMREPLY)
+		if $srv; then
+			s=${data#* }
+			s=${s%% :*}
+			sf_stdoutv "$MOD: Names for $s"
+			IFS=" " read -ra a <<<"${data#* :}"
+			for n in "${a[@]}"; do
+				channel_addname "$s" "$n"
+			done
+			unset a s n
+		fi
+	;;
+	$RPL_ENDOFNAMES)
+		if $srv; then
+			sf_stdoutv "$MOD: End of names list"
+		fi
+	;;
+esac
+
+function channel_tick
+{
+	sf_timer "channel_join" 15 || return 0
+
+	if ${CHANNEL_HIDE:-false} && ! $hidden; then
+		if (( connect_time )) && (( connect_time + 180 < $(sf_unixtime) )); then
+			sf_error "$MOD: Timed out waiting for host to be hidden! Something is FUBAR!"
+			exit 1
+		fi
+		sf_stdout "$MOD: Waiting for host to be hidden before joining channels..."
+		return 0
+	fi
+
+	local c d
+	for c in "${CHANNELS[@]:-}"; do
+		for d in "${current_channels[@]:-}"; do
+			[[ "$c" != "$d" ]] || continue 2
+		done
+		sf_stdoutv "$MOD: Attempting to join $c"
+		tx "JOIN $c"
+	done
+}
+channel_tick
+
+if ! ${GHOST:-false} && [[ -n "$reply" ]]; then
+	case "${data_larray[0]}" in
+		headcount)
+			channel_headcountquery
+		;;
+		"channel_greet")
+			case "${data_larray[1]:-}" in
+				0|off|no|false)
+					if admin_verbosehas "$(src_host)"; then
+						CHANNEL_GREET=false
+						reply "Not greeting new nicks :("
+					fi
+				;;
+				1|on|yes|true)
+					if admin_verbosehas "$(src_host)"; then
+						CHANNEL_GREET=true
+						reply "Greeting new nicks :D"
+					fi
+				;;
+				'')
+					reply "channel_greet: ${CHANNEL_GREET:-false}"
+				;;
+				*)
+					reply "usage: channel_greet [true|false]"
+				;;
+			esac
+		;;
+		"seen")
+			if (( data_count < 2 )); then
+				reply "Usage: seen <nick>"
+			else
+				channel_seenquery "${data_array[1]}"
+			fi
+		;;
+		"unsee")
+			if (( data_count < 2 )); then
+				reply "Usage: unsee <nick>"
+			else
+				channel_unsee "$(dfrom "unsee")"
+			fi
+		;;
+		"peak")
+			channel_printmax "$target"
+		;;
+		"namecount")
+			channel_namecount
+		;;
+	esac
+fi
